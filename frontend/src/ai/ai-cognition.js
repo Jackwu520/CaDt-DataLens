@@ -6,6 +6,8 @@
 // 每次维护都击穿前缀缓存（§5.3 硬约束）。bundle 是同步组装，缓存由 prefetchTurnCache 在
 // 起轮前刷新（本地文件读 ≈1–2ms），bundle 只消费缓存。
 
+import {parseJson} from '../core/json-safe.js';
+
 // 注入正文预算（字符）：overview 注入总量 1–2K token ≈ 4–6K 字符，正文留 4500（§5.3）。
 export const OVERVIEW_BODY_BUDGET = 4500;
 // 路径地图行预算：单条路径 + 标签的展示上限（超长路径截断展示）。
@@ -152,7 +154,7 @@ function charsOf(text) { return text.length; }
 
 function safeParse(raw) {
     if (typeof raw !== 'string') return null;
-    try { return JSON.parse(raw); } catch (e) { return null; }
+    return parseJson(raw, null);
 }
 
 // cognitionRulesText：守则段两态文案（属系统提示词稳定区——变的是卷不是守则，§5.4）。

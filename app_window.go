@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -161,12 +160,8 @@ func (a *App) ShowInFolder(path string) error {
 	if err != nil {
 		return fmt.Errorf("路径不存在：%s", path)
 	}
-	cmd := exec.Command("explorer.exe", explorerArgs(path, info.IsDir())...)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	_ = cmd.Process.Release()
-	return nil
+	// 平台 glue（explorer.exe / 防黑窗 / 路径归一）全在 internal/shellexec，根壳只做参数校验。
+	return shellexec.RevealInFolder(path, info.IsDir())
 }
 
 // OpenWithDefaultApp 用系统默认关联程序打开文件或目录（右键「用默认应用打开」）。
@@ -180,18 +175,6 @@ func (a *App) OpenWithDefaultApp(path string) error {
 		return fmt.Errorf("路径不存在：%s", path)
 	}
 	return shellexec.Open(filepath.Clean(path))
-}
-
-// explorerArgs 构造 ShowInFolder 传给 explorer.exe 的参数。
-// 路径必须先经 filepath.Clean 归一成 Windows 原生分隔符：前端（AI 日志目录等）传来的
-// 路径是正斜杠形式，explorer.exe 的命令行解析把 / 开头的段当开关处理，
-// 解析失败时不会报错，而是回退打开「文档」文件夹。
-func explorerArgs(path string, isDir bool) []string {
-	cleaned := filepath.Clean(path)
-	if isDir {
-		return []string{cleaned}
-	}
-	return []string{"/select,", cleaned}
 }
 
 func (a *App) CopyText(text string) error {

@@ -1686,7 +1686,11 @@ export function createAIGroupRuntime(deps) {
                 for (const targetId of targets) {
                     const answerer = relayAgentOf(groupId, targetId);
                     const answer = await relaySpeak(groupId, r, targetId, relayStageFocus({kind: 'answer', askerName: agent.name}));
-                    if (!answer.ok) continue;
+                    if (!answer.ok) {
+                        // 被回问者静音/停用/调用失败：写灰条说明原因，别让用户以为是引擎漏调度
+                        await appendSystemEvent(groupId, {type: 'relay', text: `「${answerer ? answerer.name : '被回问成员'}」无法回答「${agent.name}」的回问：${answer.error || '成员不可用'}`});
+                        continue;
+                    }
                     if (answer.status !== 'done') return 'stop';
                     answered = true;
                 }
@@ -1713,6 +1717,8 @@ export function createAIGroupRuntime(deps) {
     // 成果纪要：最后完成的棒再讲一次总结，其内容经 generateMinutes 落纪要卡片
     async function relaySummarize(groupId, r) {
         const g = groups.get(groupId);
+        // 没有实质产出（首棒前就被中断/预算耗尽）不产纪要——纪要须基于已落盘的成员发言，
+        // 此时调用方日志也不能说「已生成总结」（见 runRelayTurn 的 budget 分支文案）。
         if (!g || r.stage <= 0) return;
         const doneIdx = Math.min(r.stage, r.chain.length) - 1;
         const agentId = r.chain[doneIdx];
@@ -1756,18 +1762,21 @@ export function createAIGroupRuntime(deps) {
                     return;
                 }
                 r.leaseHeld = true;
-            } catch (e) {}
+            } catch (e) {
+                // best-effort：租约获取失败按「无租约」继续，由后端 AIGroupAppend 的 busy 语义兜底
+                console.error('接力租约获取失败，按无租约继续', e);
+            }
         }
         try {
             while (!r.abort && r.stage < r.chain.length) {
                 if (r.paused) return;
                 if (r.startedAt && Date.now() - r.startedAt > (g.meta.timeouts.discussionTotalMs || 3600000)) {
-                    await appendSystemEvent(groupId, {type: 'budget', text: '接力达到时长上限，已停止并生成总结'});
+                    await appendSystemEvent(groupId, {type: 'budget', text: r.stage > 0 ? '接力达到时长上限，已停止并生成总结' : '接力达到时长上限，已停止（尚无产出，未生成总结）'});
                     r.needMinutes = true;
                     break;
                 }
                 if (g.meta.maxTokensPerDiscussion > 0 && r.tokens >= g.meta.maxTokensPerDiscussion) {
-                    await appendSystemEvent(groupId, {type: 'budget', text: '接力达到 token 预算上限，已停止并生成总结'});
+                    await appendSystemEvent(groupId, {type: 'budget', text: r.stage > 0 ? '接力达到 token 预算上限，已停止并生成总结' : '接力达到 token 预算上限，已停止（尚无产出，未生成总结）'});
                     r.needMinutes = true;
                     break;
                 }
@@ -1780,21 +1789,14 @@ export function createAIGroupRuntime(deps) {
                 });
             }
         } finally {
-            const completed = !r.abort && r.stage >= r.chain.length && r.chain.length > 0;
             r.running = false;
             if (r.leaseHeld && backend.GroupLeaseRelease) {
                 r.leaseHeld = false;
-                Promise.resolve(backend.GroupLeaseRelease(groupId)).catch(() => {});
+                // best-effort：租约到期后端自动释放，释放失败无需打断收尾
+                Promise.resolve(backend.GroupLeaseRelease(groupId)).catch((e) => console.error('接力租约释放失败', e));
             }
             try {
-                if (r.needMinutes || completed) await relaySummarize(groupId, r);
-                if (completed) {
-                    await saveMeta(groupId, (meta) => {
-                        meta.relay.done = true;
-                        meta.relay.stage = r.stage;
-                    });
-                    await appendSystemEvent(groupId, {type: 'relay', text: `接力完成 · 共 ${r.chain.length} 棒`});
-                }
+                await finishRelay(groupId, r);
             } catch (e) {
                 console.error('接力收尾失败', e);
             }
@@ -1857,6 +1859,7 @@ export function createAIGroupRuntime(deps) {
         const r = relays.get(groupId);
         if (!r || !r.running) return {ok: false, error: '接力未在进行'};
         r.paused = true; // 当前发言说完后停（与讨论同款）
+        r.pausedAt = Date.now();
         notify();
         return {ok: true};
     }
@@ -1866,8 +1869,13 @@ export function createAIGroupRuntime(deps) {
         const r = relayOf(groupId);
         if (!g) return {ok: false, error: '群聊不存在'};
         if (!r.paused || r.running) return {ok: false, error: '接力未处于暂停'};
+        // 「结束并总结」已清 paused，走不到这里；双保险：abort/needMinutes 置位时不允许复活
+        if (r.abort || r.needMinutes) return {ok: false, error: '接力已结束，请重新开始'};
         r.paused = false;
         r.abort = false;
+        // 暂停时长不计入总时长预算：顺延 startedAt，避免长时间暂停后一恢复就立刻超时
+        if (r.pausedAt && r.startedAt) r.startedAt += Date.now() - r.pausedAt;
+        r.pausedAt = 0;
         runRelayTurn(groupId).catch((e) => {
             r.running = false;
             r.error = String((e && e.message) || e);
@@ -1881,10 +1889,30 @@ export function createAIGroupRuntime(deps) {
         if (!r || (!r.running && !r.paused)) return {ok: false, error: '接力未在进行'};
         r.abort = true;
         r.needMinutes = true;
+        // 暂停态没有活跃循环消费 abort/needMinutes：显式清 paused，防止 resumeRelay 复活；
+        // 并在这里直接收尾出纪要（running 态则由 runRelayTurn 的 finally 收尾，避免重复）。
+        const wasPaused = r.paused;
+        r.paused = false;
         // 「结束并总结」立即中断在飞请求；总结由最后完成的棒输出
         stopAll(groupId);
+        if (wasPaused) {
+            Promise.resolve().then(() => finishRelay(groupId, r)).catch((e) => console.error('接力收尾失败', e));
+        }
         notify();
         return {ok: true};
+    }
+
+    // 接力收尾：出纪要 + 落 done（runRelayTurn.finally 与暂停态 endRelay 共用）
+    async function finishRelay(groupId, r) {
+        const completed = !r.abort && r.stage >= r.chain.length && r.chain.length > 0;
+        if (r.needMinutes || completed) await relaySummarize(groupId, r);
+        if (completed) {
+            await saveMeta(groupId, (meta) => {
+                meta.relay.done = true;
+                meta.relay.stage = r.stage;
+            });
+            await appendSystemEvent(groupId, {type: 'relay', text: `接力完成 · 共 ${r.chain.length} 棒`});
+        }
     }
 
     // ---------- 手动压缩群聊数据（§3.11：唯一能压缩共享对话的路径） ----------

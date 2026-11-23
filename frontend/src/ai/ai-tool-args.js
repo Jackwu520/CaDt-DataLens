@@ -2,6 +2,7 @@
 // 模型偶发在参数末尾多写一个 } 或截断，非法文本一旦进入会话历史，
 // 之后每一轮请求都会被后端校验拒收，所以存储与发送两端都要过这一层。
 import {repairJson} from '../core/jsonrepair.js';
+import {parseJson} from '../core/json-safe.js';
 import {WIDGET_LANGS} from '../core/visual-spec.js';
 
 // 识别「可视化围栏语言被误发成工具名」：模型偶尔把 ```svg / ```mermaid / ```graph
@@ -27,12 +28,8 @@ export function fenceToolMisuseMessage(lang) {
 
 function parseObject(text) {
     if (!text) return null;
-    try {
-        const value = JSON.parse(text);
-        return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-    } catch (e) {
-        return null;
-    }
+    const value = parseJson(text, null);
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
 // 字符串感知的括号平衡扫描：取文本里第一个完整的 JSON 对象。

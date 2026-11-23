@@ -129,7 +129,10 @@ export function groupStatusText(meta, run) {
 // 接力状态文案（G7）：进行中 / 暂停 / 已完成 / 中断待续 / 待开工
 function relayStatusText(meta, run) {
     const relayMeta = meta.relay || {};
-    const count = (run && run.stageCount) || 0;
+    // 内存态 relays 重启后为空（run=null），但 meta.relay 是持久真源：据此回退棒数/断点，
+    // 否则已完成的接力会显示成「待开工」、中断态丢失断点提示。
+    const memberCount = Array.isArray(meta.memberIds) ? meta.memberIds.length : 0;
+    const count = (run && run.stageCount) || memberCount;
     const stage = (run && run.stage) || 0;
     if (run && run.running) {
         const at = count ? `第 ${stage}/${count} 棒${run.stageName ? `（${run.stageName}）` : ''}` : '';

@@ -117,7 +117,7 @@ func RunTempRoot() string {
 func newRunTempDir() (string, error) {
 	root := RunTempRoot()
 	if root == "" {
-		return "", fmt.Errorf("无法定位应用数据目录")
+		return "", appdata.ErrNoRoot
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("创建运行临时目录失败：%w", err)
@@ -623,7 +623,7 @@ func (r *Runner) RunStop(id string) error {
 func (r *Runner) GetRunTempDir() (string, error) {
 	root := RunTempRoot()
 	if root == "" {
-		return "", fmt.Errorf("无法定位应用数据目录")
+		return "", appdata.ErrNoRoot
 	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("创建运行临时目录失败：%w", err)
@@ -639,7 +639,7 @@ func (r *Runner) CleanupRunTemp(dir string) error {
 	}
 	root := RunTempRoot()
 	if root == "" {
-		return fmt.Errorf("无法定位应用数据目录")
+		return appdata.ErrNoRoot
 	}
 	rel, err := filepath.Rel(root, dir)
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {

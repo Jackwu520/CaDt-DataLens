@@ -4,6 +4,7 @@
 // pollPath 到点取产物），完成后经 ctx.onJobDone 唤醒归属会话（ai-agent-notices 信箱）；
 // ctx.onJobUpdate 刷新工具卡。轮询不跨重启：normalizeMessage 恢复时运行中任务收敛为失败。
 import {aiNowId} from './ai-constants.js';
+import {parseJson} from '../core/json-safe.js';
 import {
     buildGenMultipart,
     buildGenVars,
@@ -81,12 +82,7 @@ export function createAIGenJobs(ctx) {
     function assertOk(resp, entry) {
         if (resp && resp.error) throw new Error(resp.error);
         if (entry && entry.errorPath) {
-            let parsed = null;
-            try {
-                parsed = JSON.parse(resp && resp.body || '');
-            } catch (e) {
-                parsed = null;
-            }
+            const parsed = parseJson(resp && resp.body, null);
             if (parsed) {
                 const errors = extractGenPath(parsed, entry.errorPath);
                 if (errors.length && String(errors[0]).trim()) {

@@ -5,6 +5,8 @@
 // 2026-11-21 由 precommands.js 改名：旧名 pre-command 只表达「前置命令」，与 9 个事件
 // （含 post-tool-use / stop 这类事后钩子）不符。
 
+import {newId as makeId} from './id.js';
+
 export const LIFECYCLE_HOOK_EVENT = 'workspace-open'; // 缺省事件（老数据无 event 字段时沿用）
 
 // 9 个生命周期事件：2 个工作区级 + 7 个 AI 会话/工具级（对齐 ZCode 钩子语义）
@@ -74,9 +76,11 @@ export const LIFECYCLE_HOOK_TIMEOUT_MAX = 600000;
 export const LIFECYCLE_HOOK_ID_PREFIX = 'lh-';        // 条目 id 前缀（同 memo 的 blk-/it- 惯例）
 // 旧前缀只读兼容：存量条目（pc-）不必在保存时被换 id，否则 AI 手里/会话里的 id 会失效
 export const LIFECYCLE_HOOK_LEGACY_ID_PREFIX = 'pc-';
+// 条目 id 形状：`lh-<时间戳36>-<4 位随机>`（与旧实现逐字一致，存量 id 已在设置里）
+const HOOK_ID_OPTIONS = {sep: '-', suffixLength: 4};
 
 function newId() {
-    return LIFECYCLE_HOOK_ID_PREFIX + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+    return makeId(LIFECYCLE_HOOK_ID_PREFIX, HOOK_ID_OPTIONS);
 }
 
 // 工作区显示名（D:\a\proj → proj），与 baseNameOf 同语义；给审批卡 / 消息中心用

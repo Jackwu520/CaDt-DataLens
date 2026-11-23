@@ -5,6 +5,7 @@ import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect, createTextarea} from '../core/form-controls.js';
 import {pageHeader, commandBar, filterChips, statusBadge, stateBlock, relativeTime} from '../app-pages/ui-kit.js';
 import {describeAISchedule, aiFormatLocalMs, aiClampInt, aiTextOf} from './ai-constants.js';
+import {kvGet, kvSet} from '../core/kv-store.js';
 
 export function createAISchedule(ctx) {
     const opt = ctx.opt;
@@ -603,10 +604,8 @@ export function createAISchedule(ctx) {
         if (!fire || !fire.scheduleId) return;
         const key = 'datalens-sched-fire-' + fire.scheduleId + '-' + (fire.runNo || 0);
         const claimed = () => {
-            if (localStorage.getItem(key)) return false;
-            try {
-                localStorage.setItem(key, String(Date.now()));
-            } catch (e) {}
+            if (kvGet(key)) return false;
+            kvSet(key, String(Date.now())); // 写不进（配额/隐私模式）也算认领，同原实现
             return true;
         };
         const prompt = aiTextOf(fire.prompt);
@@ -615,7 +614,7 @@ export function createAISchedule(ctx) {
         if (fire.sessionId && !target) {
             // 本窗口不持有目标会话：等可能的持有窗口认领，无人认领则报告失败
             setTimeout(() => {
-                if (localStorage.getItem(key) || !claimed()) return;
+                if (kvGet(key) || !claimed()) return;
                 flash('定时任务「' + (aiTextOf(fire.name) || fire.scheduleId) + '」的目标会话不存在', true);
                 if (backend.AIScheduleSetResult) {
                     Promise.resolve(backend.AIScheduleSetResult(fire.scheduleId, false, '目标会话不存在')).catch(() => {});
@@ -625,7 +624,7 @@ export function createAISchedule(ctx) {
         }
         if (!document.hasFocus()) {
             await aiDelay(250);
-            if (localStorage.getItem(key)) return;
+            if (kvGet(key)) return;
         }
         if (!claimed()) return;
         await runScheduledTurn(fire, target, prefix, prompt);

@@ -5,6 +5,7 @@
 import DOMPurify from 'dompurify';
 import {createMarkdownRenderer} from '../core/markdown.js';
 import {joinSoftLines, stripFrontMatter, unitIdOf} from './reading-model.js';
+import {escapeHtml} from '../core/escape.js';
 
 const CACHE_MAX_BYTES = 8 << 20;
 const CACHE_MAX_UNITS = 12;
@@ -137,9 +138,7 @@ export function createReadingRender(deps) {
 
     // ---- TXT ----
 
-    function escapeHtml(s) {
-        return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    }
+
 
     function renderTxtUnit(content, unit, headings) {
         const lines = String(content).replace(/\r\n/g, '\n').split('\n');

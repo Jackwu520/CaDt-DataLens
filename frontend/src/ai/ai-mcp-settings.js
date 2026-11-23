@@ -6,6 +6,7 @@
 import {aiEstimateTokens} from './ai-constants.js';
 import {createInput, createTextarea} from '../core/form-controls.js';
 import {DESKTOP_MCP_SERVER} from './ai-desktop-control.js';
+import {escapeHtml} from '../core/escape.js';
 
 const MCP_SERVER_NAME_RULE = /^[A-Za-z0-9_-]{1,32}$/;
 const MCP_TIMEOUT_MAX_MS = 600000;
@@ -625,10 +626,6 @@ export function createAIMcpSettings(ctx) {
         void loadConfig().then(() => {
             renderAll();
         }).catch(() => {}); // loadConfig 失败已在面板内展示错误，这里不再重复 flash
-    }
-
-    function escapeHtml(text) {
-        return String(text).replace(/[&<>"']/g, (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
     }
 
     bind();

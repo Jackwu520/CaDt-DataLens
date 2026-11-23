@@ -2,6 +2,7 @@
 // 中文排版整理、起名器、场景分隔符、光标位置与 goto 对话框、关闭确认对话框。
 // 从 writing-ui.js 拆出；四个模块级 let（基线/光标 rAF）随本域迁入，deps.flash 由宿主注入。
 import {WRITING_FONTS, formatWritingText, genName, SCENE_SEPARATOR} from '../core/writing.js';
+import {kvGetJson, kvSetJson} from '../core/kv-store.js';
 
 export function createWritingMode(deps) {
 
@@ -208,10 +209,7 @@ function writingTodayStr() {
 }
 
 function loadWritingDaily() {
-    let store = null;
-    try {
-        store = JSON.parse(localStorage.getItem(WRITING_DAILY_KEY) || 'null');
-    } catch (e) {}
+    let store = kvGetJson(WRITING_DAILY_KEY, null);
     const today = writingTodayStr();
     if (!store || store.date !== today || typeof store.count !== 'number') {
         store = {date: today, count: 0, goalHit: false};
@@ -220,9 +218,7 @@ function loadWritingDaily() {
 }
 
 function saveWritingDaily(store) {
-    try {
-        localStorage.setItem(WRITING_DAILY_KEY, JSON.stringify(store));
-    } catch (e) {}
+    kvSetJson(WRITING_DAILY_KEY, store); // 尽力而为：配额满只影响下次冷启动的计数
 }
 
 // 挂在字数防抖管线与 updateStatus 上；写作模式生效时累计今日/本次增量

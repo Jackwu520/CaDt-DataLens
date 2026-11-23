@@ -13,6 +13,7 @@ import {
 } from './ai-permissions.js';
 import {describeSandboxGrant, sandboxHasResidue} from './ai-sandbox-grant.js';
 import {createSwitch} from '../core/form-controls.js';
+import {parseJson} from '../core/json-safe.js';
 // 插件 AI 工具注册表（纯逻辑，无 DOM）：权限面板据此渲染三层授权开关
 import * as pluginToolsMod from '../shell/plugin-tools.js';
 
@@ -721,12 +722,7 @@ let semanticAutoRecheckDone = false; // 注册表空时的自动补扫，每会�
         try {
             const read = await readTextFile(path, 256 << 10);
             if (read && read.text && read.text.trim()) {
-                let parsed = null;
-                try {
-                    parsed = JSON.parse(read.text);
-                } catch (e) {
-                    parsed = null;
-                }
+                const parsed = parseJson(read.text, null);
                 if (parsed && typeof parsed === 'object') rules = normalizePermissionRules(parsed);
             }
         } catch (e) {

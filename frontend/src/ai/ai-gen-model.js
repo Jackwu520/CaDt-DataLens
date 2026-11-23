@@ -3,6 +3,8 @@
 // 约定：占位符一律渲染为 JSON 字面量（bodyTemplate 里不手写引号，prompt 内容无法破坏 JSON 结构）；
 // headers / 轮询 URL 用纯文本替换（renderGenText）。方案细节见该文档 §3.1-§3.3。
 
+import {newId} from '../core/id.js';
+
 export const GEN_KINDS = ['image', 'video'];
 export const GEN_KIND_LABELS = {image: '生图', video: '视频'};
 
@@ -456,7 +458,7 @@ export function buildGenMultipart(entry, vars, refs, options) {
     const list = Array.isArray(refs) ? refs : [];
     if (!list.length) throw new Error('multipart 编辑端点需要至少一张参考图');
     const boundary = String((options && options.boundary) || '').trim() ||
-        '----CaDtDataLensBoundary' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+        newId('----CaDtDataLensBoundary', {suffixLength: 8});
     const imageField = String((entry && entry.editImageWrap) || '').trim() || GEN_MULTIPART_DEFAULT_IMAGE_FIELD;
 
     // 1) 模板 → 文本字段（images 跳过：参考图只从 references 来）

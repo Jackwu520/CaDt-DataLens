@@ -490,7 +490,10 @@ test('normalizeGroupMode：三值直传，其他值回落圆桌', () => {
 test('群模式接线：草稿层与运行时都经 normalizeGroupMode，不再自己写三元', () => {
     const read = (rel) => readFileSync(new URL('../../src/ai/' + rel, import.meta.url), 'utf8');
     const sidebar = read('ai-group-sidebar.js');
-    assert.ok(sidebar.includes('mode: normalizeGroupMode(createControls.mode.control.value)'));
+    // 两种写法都算合规：对象字面量直传，或先存局部 const mode 再简写返回（relay 模式重构后用后者）
+    const goesThroughNormalize = sidebar.includes('mode: normalizeGroupMode(createControls.mode.control.value)') ||
+        sidebar.includes('const mode = normalizeGroupMode(createControls.mode.control.value)');
+    assert.ok(goesThroughNormalize, '草稿层的 mode 必须经 normalizeGroupMode 归一');
     assert.equal(sidebar.includes("=== 'task' ? 'task' : 'roundtable'"), false);
     const runtime = read('ai-group-runtime.js');
     assert.ok(runtime.includes('mode: normalizeGroupMode(source.mode)'));

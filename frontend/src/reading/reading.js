@@ -12,6 +12,7 @@ import {createReadingRender} from './reading-render.js';
 import {createReadingSearch} from './reading-search.js';
 import {createReadingTts} from './reading-tts.js';
 import {whenAppEvents} from '../core/app-events.js';
+import {escapeHtml} from '../core/escape.js';
 import {
     buildSkeleton, renderBookshelf, renderDetail, renderToc, scrollTocToActive,
     renderBookmarks, renderSearchResults, renderSettingsPopover, renderStats,
@@ -485,7 +486,7 @@ export function createReadingMode(deps) {
                 h.offset >= lo && h.offset < hi && String(h.title).indexOf(chapter.volumeTitle) >= 0);
             if (inSlice) return '';
         }
-        return '<div class="rd-volume-header">' + escapeHtmlText(chapter.volumeTitle) + '</div>';
+        return '<div class="rd-volume-header">' + escapeHtml(chapter.volumeTitle) + '</div>';
     }
 
     function chapterEndFor(index) {
@@ -507,9 +508,7 @@ export function createReadingMode(deps) {
         if (btnPrev) btnPrev.addEventListener('click', () => navigate(-1));
     }
 
-    function escapeHtmlText(s) {
-        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
+
 
     async function renderChapter(index, opts) {
         opts = opts || {};

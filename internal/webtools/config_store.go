@@ -4,7 +4,6 @@ package webtools
 
 import (
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"strings"
 	"time"
@@ -36,7 +35,7 @@ func ConfigPath() string {
 func LoadDefaultConfig() (Config, error) {
 	path := ConfigPath()
 	if path == "" {
-		return Config{}, errors.New("无法定位应用数据目录")
+		return Config{}, appdata.ErrNoRoot
 	}
 	return LoadConfig(path)
 }
@@ -45,7 +44,7 @@ func LoadDefaultConfig() (Config, error) {
 func MergeAndSaveConfig(payload map[string]interface{}) error {
 	path := ConfigPath()
 	if path == "" {
-		return errors.New("无法定位应用数据目录")
+		return appdata.ErrNoRoot
 	}
 	lock, err := lockConfigStore(path)
 	if err != nil {
@@ -75,7 +74,7 @@ func MergeAndSaveConfig(payload map[string]interface{}) error {
 func ClearDefaultAPIKey() error {
 	path := ConfigPath()
 	if path == "" {
-		return errors.New("无法定位应用数据目录")
+		return appdata.ErrNoRoot
 	}
 	lock, err := lockConfigStore(path)
 	if err != nil {

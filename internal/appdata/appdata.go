@@ -6,6 +6,7 @@
 package appdata
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 )
@@ -14,6 +15,11 @@ const (
 	vendorDir = "CandySweet"
 	appDir    = "CaDt-DataLens"
 )
+
+// ErrNoRoot 系统配置目录不可用、定位不到应用数据根时的统一错误。
+// 需要应用数据目录的各包一律返回它（不要再各自 errors.New 同一句文案），
+// 调用方可 errors.Is 判定，文案也就只有一处可改。
+var ErrNoRoot = errors.New("无法定位应用数据目录")
 
 // RootAt 在给定系统配置目录下拼出应用数据根；configDir 为空时返回空。
 func RootAt(configDir string) string {

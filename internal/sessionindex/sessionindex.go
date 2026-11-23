@@ -5,7 +5,6 @@ package sessionindex
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"datalens/internal/appdata"
 
 	_ "modernc.org/sqlite"
 )
@@ -103,7 +104,7 @@ func Exists() bool {
 func database() (*sql.DB, error) {
 	path := Path()
 	if path == "" {
-		return nil, errors.New("无法定位应用数据目录")
+		return nil, appdata.ErrNoRoot
 	}
 	aiIndexMu.Lock()
 	defer aiIndexMu.Unlock()

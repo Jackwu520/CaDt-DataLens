@@ -3,6 +3,7 @@
 // 配置语义：带 file 的绑定目标文件（标题栏 ▶ / F5 直接运行那个文件），不带的为旧版参数预设。
 import {RECIPES, SELF_TEST, configRowSubtitle, extOf} from '../terminal/run.js';
 import {createInput} from '../core/form-controls.js';
+import {newId} from '../core/id.js';
 
 export function createSettingsPaneRun(deps) {
 
@@ -237,7 +238,7 @@ function saveProfileEditor(form) {
         profiles = profiles.map((p) => (p.id === form.id ? {...p, name, file, lang, args: form.args, template: form.template.trim()} : p));
         deps.settings.runProfiles = profiles;
     } else {
-        savedId = 'rp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
+        savedId = newId('rp-', {sep: '-', suffixLength: 4});
         deps.settings.runProfiles = profiles.concat([{
             id: savedId,
             name, file, lang,

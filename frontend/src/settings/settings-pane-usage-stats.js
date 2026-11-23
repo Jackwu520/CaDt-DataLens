@@ -3,6 +3,7 @@
 // 热力图用 CSS Grid 手写（53 周 × 7 天，每日/每周/累计三种模式）。
 
 import {createSelect} from '../core/form-controls.js';
+import {escapeHtml} from '../core/escape.js';
 import {
     buildHeatmapModel,
     buildTrendModel,
@@ -837,12 +838,6 @@ export function createSettingsPaneUsageStats(deps) {
     }
 
     return {mount, renderUsageStatsPane};
-}
-
-function escapeHtml(text) {
-    return String(text == null ? '' : text).replace(/[&<>"']/g, (ch) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[ch]));
 }
 
 function normalizeSnapshot(raw, range) {

@@ -3,6 +3,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {fileIconSpec} from '../core/fileicons.js';
+import {kvGetJson, kvRemove, kvSetJson} from '../core/kv-store.js';
 
 /**
  * 应用级动作域：退出、最近打开记录、外部文件拖入目录。
@@ -35,12 +36,8 @@ const recentOpenKey = 'datalens-recent';
 const recentOpenLimit = 12;
 
 function readRecentOpen() {
-    try {
-        const raw = JSON.parse(localStorage.getItem(recentOpenKey) || '[]');
-        return Array.isArray(raw) ? raw.filter((it) => it && it.path) : [];
-    } catch (e) {
-        return [];
-    }
+    const raw = kvGetJson(recentOpenKey, []);
+    return Array.isArray(raw) ? raw.filter((it) => it && it.path) : [];
 }
 
 function rememberRecentOpen(path, name, isDir) {
@@ -48,15 +45,11 @@ function rememberRecentOpen(path, name, isDir) {
     const key = String(path).replace(/\\/g, '/').toLowerCase();
     const list = readRecentOpen().filter((it) => String(it.path || '').replace(/\\/g, '/').toLowerCase() !== key);
     list.unshift({path, name: name || deps.baseNameOf(path), isDir: !!isDir});
-    try {
-        localStorage.setItem(recentOpenKey, JSON.stringify(list.slice(0, recentOpenLimit)));
-    } catch (e) {}
+    kvSetJson(recentOpenKey, list.slice(0, recentOpenLimit));
 }
 
 function clearRecentOpen() {
-    try {
-        localStorage.removeItem(recentOpenKey);
-    } catch (e) {}
+    kvRemove(recentOpenKey);
     deps.flash('已清除最近打开记录');
 }
 

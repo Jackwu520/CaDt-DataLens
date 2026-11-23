@@ -5,6 +5,7 @@ import {iconSvg} from '../core/icons.js';
 import {createFileIcon} from '../core/fileicons.js';
 import {enhanceWidgets, parkPendingWidgets, restoreParkedWidgets} from '../core/widget.js';
 import {aiFormatTime, aiTextOf} from './ai-constants.js';
+import {parseJson} from '../core/json-safe.js';
 import {diffNoDigits} from './ai-diff-view.js';
 import {agentLevelText} from './ai-team-model.js';
 import {formatCommandDuration} from './ai-terminal-tools.js';
@@ -134,8 +135,7 @@ export function toolFileOpenTarget(message, info, root) {
     if (!message || !info || info.remote || !info.primary || info.primary === '—') return '';
     if (message.targetPath) return message.targetPath;
     if (message.approval && message.approval.path) return message.approval.path;
-    let args = {};
-    try { args = JSON.parse(message.arguments || '{}') || {}; } catch (e) {}
+    const args = parseJson(message.arguments, {}) || {};
     const raw = aiTextOf(args.path).trim();
     if (/^(?:[A-Za-z]:[\\/]|[\\/])/.test(raw)) return raw;
     const rel = (info.dir ? info.dir + '/' : '') + info.primary;
@@ -676,10 +676,7 @@ export function createAIToolCards(ctx) {
     }
 
     function toolPrimary(message) {
-        let args = {};
-        try {
-            args = JSON.parse(message.arguments || '{}') || {};
-        } catch (e) {}
+        const args = parseJson(message.arguments, {}) || {};
         const path = aiTextOf(args.path).trim();
         const base = path ? path.replace(/^.*[\\/]/, '') : '';
         const dir = base && path.length > base.length ? path.slice(0, path.length - base.length).replace(/[\\/]+$/, '') : '';
@@ -918,7 +915,7 @@ export function createAIToolCards(ctx) {
         let readLineRange = '';
         if (isRead) {
             try {
-                const args = JSON.parse(message.arguments || '{}') || {};
+                const args = parseJson(message.arguments, {}) || {};
                 const s = Math.round(Number(args.startLine));
                 if (Number.isFinite(s) && s > 0) {
                     const e = Math.round(Number(args.endLine));
@@ -1035,7 +1032,7 @@ export function createAIToolCards(ctx) {
             // 执行中（审批/落盘前）approval 还没挂：edit_file 参数此时已完整，
             // old_string → new_string 直接精确算 ±，不必等审批走完
             try {
-                const input = JSON.parse(message.arguments || '{}');
+                const input = parseJson(message.arguments, {});
                 if (typeof input.old_string === 'string' && typeof input.new_string === 'string') {
                     const ops = ctx.computeLineDiff(input.old_string, input.new_string);
                     let added = 0;
@@ -1139,7 +1136,7 @@ export function createAIToolCards(ctx) {
             // $ 命令块（长命令折叠「展开命令」）+ 输出
             let command = '';
             try {
-                command = aiTextOf(JSON.parse(message.arguments || '{}').command).trim();
+                command = aiTextOf(parseJson(message.arguments, {}).command).trim();
             } catch (e) {}
             if (command) {
                 const cmdLine = document.createElement('div');
@@ -1184,7 +1181,7 @@ export function createAIToolCards(ctx) {
             // 头部主参数只有 60 字摘要，完整提示词放展开正文（长文折叠，同命令卡模式）
             let genPrompt = '';
             try {
-                genPrompt = aiTextOf(JSON.parse(message.arguments || '{}').prompt).trim();
+                genPrompt = aiTextOf(parseJson(message.arguments, {}).prompt).trim();
             } catch (e) {}
             if (genPrompt) {
                 const promptLine = document.createElement('div');

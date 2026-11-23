@@ -7,22 +7,13 @@
 // DOM 复用 storage pane 的 stg-row 系列类（同一张设置页，视觉一致）。
 
 import {createSwitch, createInput} from '../core/form-controls.js';
+import {formatBytes} from '../core/humanize.js';
+import {el} from '../core/dom.js';
 
 // ---- 纯函数（测试见 test/settings/settings-pane-wipeguard.test.mjs）----
 
-// humanBytes：与 settings-pane-storage 的 formatBytes 同口径（够用即可，不追求精确）。
-export function humanBytes(n) {
-    const value = Number(n) || 0;
-    if (value < 1024) return value + ' B';
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    let size = value / 1024;
-    let index = 0;
-    while (size >= 1024 && index < units.length - 1) {
-        size /= 1024;
-        index += 1;
-    }
-    return size.toFixed(size >= 100 ? 0 : 1) + ' ' + units[index];
-}
+// humanBytes：字节数人可读化，实现统一到 core/humanize.js 的 formatBytes（保留旧名）。
+export const humanBytes = formatBytes;
 
 // formatBackupTime：时间戳 → 'MM-DD HH:mm'（当年）或 'YYYY-MM-DD'（往年）。
 export function formatBackupTime(at, now) {
@@ -101,13 +92,6 @@ export function resolveDep(raw, fallback) {
 export function createSettingsPaneWipeguard(deps) {
     // deps: { get backend, get root, get settings, get applySettings,
     //         get confirmAction(message, action, okLabel?, title?, variant?), get flash, get syncConfig }
-
-    function el(tag, className, text) {
-        const node = document.createElement(tag);
-        if (className) node.className = className;
-        if (text != null) node.textContent = text;
-        return node;
-    }
 
     // settings / backend / root 都是 getter（求值即最终值，非函数）。此前误写成
     // deps.settings() / deps.backend() / deps.root()（当函数调用），renderSection 每次

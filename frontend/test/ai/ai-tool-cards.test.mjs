@@ -103,6 +103,21 @@ test('spinner 相位接线：CSS 周期与 JS 常量一致，且接受 --ai-spin
     assert.match(rule[0], /animation-delay:\s*var\(--ai-spin-phase/, '负 delay 变量不能丢，否则重建仍会回弹');
 });
 
+test('工具卡折叠动画：refreshToolWrap 在整卡重建时补收缩，且尊重减少动画', () => {
+    // 工具卡 run_command / search_text 等 running 展开、done 折叠；状态更新走整卡重建
+    // （wrap.innerHTML=''），新节点一出生就折叠，纯 CSS transition 不会触发。试点用 Web Animations
+    // 从旧高度补一段收缩，避免跑完瞬间矮一截的闪。这里断言接线没被后续重构碰掉。
+    const panel = readFileSync(new URL('../../src/ai/ai-panel.js', import.meta.url), 'utf8');
+    const fn = panel.slice(panel.indexOf('function refreshToolWrap'), panel.indexOf('function sendAppMessage'));
+    assert.ok(fn.length > 100, 'refreshToolWrap 源码切片失效');
+    // 只在「旧卡展开 → 新卡折叠」的状态翻转时触发（避免每次刷新都播）
+    assert.match(fn, /oldCard\.classList\.contains\('collapsed'\)/, '必须读旧卡的折叠态');
+    assert.match(fn, /newCard\.classList\.contains\('collapsed'\)/, '必须读新卡的折叠态');
+    // 补动画用 Web Animations（height 只改视觉、不占布局，贴底一次到位）
+    assert.match(fn, /newCard\.animate\(/, '折叠收缩须走 Web Animations');
+    assert.match(fn, /prefers-reduced-motion: reduce/, '必须尊重系统减少动画');
+});
+
 test('审批正文：低优先级项被 flex 压缩时不能压成「一行都看不见」', () => {
     // .ai-tool-body.ai-tool-approval-body 是 max-height + overflow:hidden 的纵向 flex，
     // 命令块与结果输出是 flex: 0 1 auto（可缩）。不设 min-height 时，长 diff 会把它们

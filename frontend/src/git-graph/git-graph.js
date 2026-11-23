@@ -8,6 +8,7 @@
 import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect} from '../core/form-controls.js';
 import {createFileIcon} from '../core/fileicons.js';
+import {kvGet, kvSet} from '../core/kv-store.js';
 import {createGitGraphDialogs} from './git-graph-dialogs.js';
 
 const ROW_H = 26;        // 提交行高（px）
@@ -291,18 +292,14 @@ export function createGitGraph(ctx) {
 
     // 栏宽持久化：读用 try/catch 兜底（隐私模式 / 损坏值），写尽力而为
     function loadPaneWidths() {
-        try {
-            const raw = localStorage.getItem(PANE_W_KEY);
-            if (!raw) return;
-            const v = JSON.parse(raw);
-            if (v && Number.isFinite(v.refsW)) state.refsW = v.refsW;
-            if (v && Number.isFinite(v.detailW)) state.detailW = v.detailW;
-        } catch (_) { /* 损坏值或存储不可用：保留默认 */ }
+        const v = kvGetJson(PANE_W_KEY, null);
+        if (!v) return;
+        if (Number.isFinite(v.refsW)) state.refsW = v.refsW;
+        if (Number.isFinite(v.detailW)) state.detailW = v.detailW;
     }
     function savePaneWidths() {
-        try {
-            localStorage.setItem(PANE_W_KEY, JSON.stringify({refsW: state.refsW, detailW: state.detailW}));
-        } catch (_) { /* 存储不可用：本次会话内仍生效 */ }
+        // 写不进也不提示：栏宽是纯装饰性偏好，本次会话内仍然生效
+        kvSetJson(PANE_W_KEY, {refsW: state.refsW, detailW: state.detailW});
     }
     // 把当前栏宽应用到 DOM（CSS 变量），并按容器实际宽度收敛，避免窄窗口下中间栏被挤没
     function applyPaneWidths() {
@@ -1095,16 +1092,14 @@ export function createGitGraph(ctx) {
     // 详情信息区高度持久化：null = 未拖过（自适应内容）。存比例（相对详情高），窗口变化不失真。
     const INFO_H_KEY = 'cadt.gitgraph.infoH';
     function loadInfoH() {
-        try {
-            const raw = localStorage.getItem(INFO_H_KEY);
-            if (!raw) return null;
-            const v = Number(raw);
-            if (!Number.isFinite(v) || v <= 0.05 || v >= 0.9) return null;
-            return v;
-        } catch (_) { return null; }
+        const raw = kvGet(INFO_H_KEY);
+        if (!raw) return null;
+        const v = Number(raw);
+        if (!Number.isFinite(v) || v <= 0.05 || v >= 0.9) return null;
+        return v;
     }
     function saveInfoH(ratio) {
-        try { localStorage.setItem(INFO_H_KEY, String(ratio)); } catch (_) { /* 存储不可用：会话内仍生效 */ }
+        kvSet(INFO_H_KEY, String(ratio)); // 存储不可用：会话内仍生效
     }
 
     // mkDetailSplitter 详情内上下拖动条：拖动改信息区高度（其余给本次变动树）。

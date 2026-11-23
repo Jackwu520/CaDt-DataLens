@@ -23,13 +23,11 @@ export function createAIAgentSettings(ctx) {
     // 分组建议弹层（接入弹层栈的 popover）：同一时刻最多一个，句柄收口一切关闭路径
     let groupSuggestEl = null;
     let groupSuggestHandle = null;
-    let groupSuggestDismiss = null;
 
     function closeGroupSuggest() {
         const handle = groupSuggestHandle;
         groupSuggestHandle = null;
         if (handle) handle.dispose(); // onClose 回调会再进这里，句柄已置空防重入
-        if (groupSuggestDismiss) { groupSuggestDismiss(); groupSuggestDismiss = null; }
         if (groupSuggestEl && groupSuggestEl.parentElement) groupSuggestEl.remove();
     }
 
@@ -67,15 +65,10 @@ export function createAIAgentSettings(ctx) {
             groupSuggestEl.style.visibility = '';
         }
         if (!groupSuggestHandle) {
-            const onDocMouseDown = (e) => {
-                if (groupSuggestEl && groupSuggestEl.contains(e.target)) return;
-                if (editorControls && editorControls.group && editorControls.group.element.contains(e.target)) return;
-                closeGroupSuggest();
-            };
-            document.addEventListener('mousedown', onDocMouseDown, true);
-            groupSuggestDismiss = () => document.removeEventListener('mousedown', onDocMouseDown, true);
+            const groupAnchor = editorControls && editorControls.group && editorControls.group.element;
             groupSuggestHandle = overlayStack.open({
                 id: 'agent-group-suggest', kind: 'popover', el: groupSuggestEl,
+                closeOnOutsideClick: true, anchors: groupAnchor ? [groupAnchor] : [],
                 onClose: () => { closeGroupSuggest(); return true; },
             });
         }

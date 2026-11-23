@@ -6,6 +6,8 @@ import {iconSvg} from '../core/icons.js';
 import {copyImageUrlToClipboard, dataUrlToFile} from '../core/image-clipboard.js';
 import {createInput, createTextarea} from '../core/form-controls.js';
 import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
+import {escapeHtml} from '../core/escape.js';
+import {kvGet, kvSet} from '../core/kv-store.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
 import {getPluginDocConverters} from '../shell/plugins.js';
 import {memoDocxBase64} from './memo-docx.js';
@@ -61,14 +63,12 @@ const imageDataUrls = new Map();
 
 // 当前作用域：每窗口记住上次用哪个（重启面板回到原作用域）。
 function currentScope() {
-    try {
-        const v = localStorage.getItem(SCOPE_STORAGE_KEY);
-        if (v === 'workspace' || v === 'global') return v;
-    } catch (e) { /* localStorage 不可用时用默认 */ }
-    return 'workspace';
+    const v = kvGet(SCOPE_STORAGE_KEY);
+    if (v === 'workspace' || v === 'global') return v;
+    return 'workspace'; // 未存过 / 存储不可用时用默认
 }
 function setCurrentScope(scope) {
-    try { localStorage.setItem(SCOPE_STORAGE_KEY, scope); } catch (e) { /* 尽力而为 */ }
+    kvSet(SCOPE_STORAGE_KEY, scope); // 尽力而为：写不进不影响本会话的使用
 }
 
 // ===== 视图实例表 =====
@@ -858,10 +858,7 @@ async function resolveImage(view, rel) {
     return url || '';
 }
 
-function escapeHtml(t) {
-    return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+
 
 // renderTextWithImages 文本条目的轻量渲染：整段转义（原始 HTML 不执行）后，
 // 把贴图占位符替换成内联 <img>（data-memo-img 标记，随后异步换 data URL）。换行交给 pre-wrap。

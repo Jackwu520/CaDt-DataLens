@@ -9,6 +9,7 @@
 // 宁可漏填也不能填错（填错窗口会静默截断输出，比不填更糟）。
 
 import {CONTEXT_WINDOW_MAX, CONTEXT_WINDOW_MIN, MODALITY_KEYS, OUTPUT_WINDOW_MAX, OUTPUT_WINDOW_MIN} from './ai-config-model.js';
+import {parseJson} from '../core/json-safe.js';
 
 // 远端单文件仓库的默认地址（Gitee raw，公开组织 cadt-datalens-data）；设置页可覆盖。
 export const CATALOG_URL_DEFAULT = 'https://gitee.com/cadt-datalens-data/model-catalog/raw/main/catalog.json';
@@ -481,12 +482,7 @@ export function createModelCatalogStore(deps) {
 
     function adopt(text, at) {
         if (!text) return false;
-        let parsed = null;
-        try {
-            parsed = JSON.parse(text);
-        } catch (e) {
-            return false;
-        }
+        const parsed = parseJson(text, null);
         const normalized = normalizeCatalog(parsed);
         if (!normalized) return false;
         remote = normalized;

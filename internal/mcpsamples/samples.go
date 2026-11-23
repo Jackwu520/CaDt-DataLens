@@ -154,7 +154,7 @@ func mcpSampleServerConfig(def mcpSampleDef, scriptPath string) mcp.MCPServerCon
 func materializeMCPSample(def mcpSampleDef) (string, error) {
 	path := mcpSampleScriptPath(def)
 	if path == "" {
-		return "", errors.New("无法定位应用数据目录")
+		return "", appdata.ErrNoRoot
 	}
 	return writeSampleScript(def, path)
 }

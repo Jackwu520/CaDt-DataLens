@@ -3,6 +3,7 @@
 // 状态来自 runtime（subscribe + groupById / activeStreamOf / discussionSnapshot）；DOM 只做渲染。
 // 面板切换视图时 dispose（退订/清 timer/摘除文档级监听）；群讨论在 runtime 里继续跑。
 import {createInput, createTextarea} from '../core/form-controls.js';
+import {el} from '../core/dom.js';
 import {iconSvg} from '../core/icons.js';
 import {STANCE_LABELS, stripHandoffMarker} from './ai-group-model.js';
 import {
@@ -29,13 +30,6 @@ const FLUSH_THROTTLE_MS = 80;
 // 输入框最大可视高度（约 6 行）
 const COMPOSER_MAX_PX = 132;
 const MENTION_ALL = '全体成员';
-
-function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
-}
 
 function icon(name, size) {
     const span = el('span', 'gc-icon');

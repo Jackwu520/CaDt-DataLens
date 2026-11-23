@@ -2,6 +2,7 @@
 // search_text 通配过滤 / list_dir 人类可读大小 / browser_navigate 的 file:// 解析）。
 // ai-panel.js 超线只减不增，这些逻辑从 executeTool 各 case 抽到这里，
 // 配套测试见 ai-file-tools.test.mjs。
+import {formatBytes} from '../core/humanize.js';
 
 export const AI_READ_MAX_CHARS = 64 << 10;
 
@@ -115,14 +116,12 @@ export function locateEditTarget(text, oldString, newString, replaceAll) {
 
 // —— list_dir ——
 
-// 字节数的人类可读形式（1024 基；一位小数去掉尾零）
+// 字节数的人类可读形式（1024 基，紧凑无空格、去尾零）—— 格式化实现统一到 core/humanize.js。
+// 保留旧守卫：非有限值/负数返回空串，调用方据此不显示大小（喂给模型的工具输出里显示「0B」会误导）。
 export function humanSizeBytes(n) {
     const v = Number(n);
     if (!Number.isFinite(v) || v < 0) return '';
-    if (v < 1024) return v + 'B';
-    const trim = (x) => x.toFixed(1).replace(/\.0$/, '');
-    if (v < 1024 * 1024) return trim(v / 1024) + 'KB';
-    return trim(v / (1024 * 1024)) + 'MB';
+    return formatBytes(v, {compact: true});
 }
 
 // list_dir 递归树（Go ReadDirTree 的结果）→ ├──/└── 文本。目录名带 / 后缀，

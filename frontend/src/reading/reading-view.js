@@ -3,6 +3,7 @@
 // 样式见 reading.css（.rd- 前缀）。
 
 import {minutesFor} from './reading-model.js';
+import {el} from '../core/dom.js';
 import {iconSvg} from '../core/icons.js';
 
 const FONT_FAMILIES = {
@@ -18,13 +19,6 @@ export function fontFamilyFor(id) {
 }
 
 export const READING_THEMES = ['auto', 'paper', 'sepia', 'light', 'dark'];
-
-function el(tag, className, text) {
-    const e = document.createElement(tag);
-    if (className) e.className = className;
-    if (text !== undefined) e.textContent = text;
-    return e;
-}
 
 function btn(className, text) {
     const b = el('button', className, text);

@@ -4,16 +4,10 @@
 // 滚动与高亮都在那边），本模块只做渲染与键盘/点击交互。
 import {splitTurnReminderPrefix} from './ai-turn-reminder.js';
 import {splitQuotePrefix} from './ai-quote.js';
+import {el} from '../core/dom.js';
 
 const MAX_TEXT = 160;
 const MAX_ITEMS = 400;
-
-function el(tag, cls, text) {
-    const node = document.createElement(tag);
-    if (cls) node.className = cls;
-    if (text != null) node.textContent = text;
-    return node;
-}
 
 // 单行预览：把换行、连续空白压成空格，避免行高被撑开
 function oneLine(text) {

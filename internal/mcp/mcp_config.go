@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"datalens/internal/appdata"
 	"datalens/internal/atomfile"
 )
 
@@ -115,7 +116,7 @@ func ReadConfig() (MCPConfig, error) {
 func readMCPConfigAt(path string) (MCPConfig, error) {
 	var cfg MCPConfig
 	if path == "" {
-		return cfg, errors.New("无法定位应用数据目录")
+		return cfg, appdata.ErrNoRoot
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -151,7 +152,7 @@ func WriteConfig(cfg MCPConfig) error {
 
 func writeMCPConfigAt(path string, cfg MCPConfig) error {
 	if path == "" {
-		return errors.New("无法定位应用数据目录")
+		return appdata.ErrNoRoot
 	}
 	if cfg.Version == 0 {
 		cfg.Version = mcpConfigVersion

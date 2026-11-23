@@ -3,7 +3,7 @@
 // 这里锁住「改一处就会悄悄变味」的三条判定。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subScopeDowngrade, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, waitWakeText, waitTimeoutText, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agentToolArgBrief, parseTranscriptLines} from '../../src/ai/ai-subagents.js';
+import {takeInboxBatch, inboxMessageText, canReviveRecord, isStaleRecord, subAgentScopeOf, subScopeDowngrade, subTreeOwned, subTreeIdsOf, resolveWaitTimeoutSec, resolveSubAgentRounds, pendingInboxCount, waitWakeText, waitTimeoutText, agentDescendsFrom, parentSessionIdOf, agentMessageBlocks, agentRecordBlocks, agentTranscriptBlocks, agentBlockSig, agentToolArgBrief, parseTranscriptLines, AI_INBOX_WAIT_MAX_SEC} from '../../src/ai/ai-subagents.js';
 
 test('takeInboxBatch：插队（step）先于排队（turn），各自保持入队顺序', () => {
     const inbox = {
@@ -109,7 +109,8 @@ test('resolveWaitTimeoutSec：null / 空串 / false 不许变成「不限时」�
     assert.equal(resolveWaitTimeoutSec(0), 5, '显式 0 也抬到最短值：不再保留「不限时」');
     assert.equal(resolveWaitTimeoutSec(-30), 5);
     assert.equal(resolveWaitTimeoutSec('30'), 30, '数字字符串照常解析');
-    assert.equal(resolveWaitTimeoutSec(9999), 600, '上限 600');
+    assert.equal(AI_INBOX_WAIT_MAX_SEC, 1800, '上限常量应为 1800');
+    assert.equal(resolveWaitTimeoutSec(9999), 1800, '上限钳到 AI_INBOX_WAIT_MAX_SEC（1800）');
     assert.equal(resolveWaitTimeoutSec('abc'), 60, '解析不了回落默认');
 });
 

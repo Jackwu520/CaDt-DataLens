@@ -3,12 +3,12 @@ package main
 // logging.go：日志引擎（internal/applog）的绑定壳与跨包 Logf 入口。
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"datalens/internal/appconfig"
+	"datalens/internal/appdata"
 	"datalens/internal/applog"
 )
 
@@ -57,7 +57,7 @@ func (a *App) GetLogPath() string {
 func (a *App) OpenLogDir() error {
 	dir := applog.Dir()
 	if dir == "" {
-		return errors.New("无法定位应用数据目录")
+		return appdata.ErrNoRoot
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("无法创建日志目录：%w", err)

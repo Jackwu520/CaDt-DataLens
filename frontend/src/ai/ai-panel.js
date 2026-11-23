@@ -12,6 +12,7 @@ import {overlayStack} from '../core/overlay-stack.js';
 import {createContextMenu} from '../shell/contextmenu.js';
 import {mergePluginAIRequest, pluginAIAccounts} from '../shell/plugin-ai-providers.js';
 import {copyImageUrlToClipboard} from '../core/image-clipboard.js';
+import {kvGet, kvGetJson, kvRemove, kvSet, kvSetJson} from '../core/kv-store.js';
 import {createImageLightbox} from '../shell/image-lightbox.js';
 import {svgToDataUrl} from '../core/widget.js';
 import {createFileIcon} from '../core/fileicons.js';
@@ -40,6 +41,7 @@ import {
     slimBreakdownParts,
 } from './ai-context-slim.js';
 import {groupToolCalls, isParallelToolCall} from './ai-tool-schedule.js';
+import {shouldAnimateLayout, heightKeyframes, LAYOUT_MOTION_OPTIONS} from './ai-layout-motion.js';
 import {isBlockingEvent} from '../core/lifecycle-hooks.js';
 import {
     buildHoverScript,
@@ -1196,11 +1198,8 @@ export function createAIPanel(options) {
     function configUseDisk() {
         if (configFallback) return false;
         if (!backend.AIConfigRead || !backend.AIConfigWrite) return false;
-        try {
-            return localStorage.getItem(AI_CONFIG_MODE_KEY) !== 'legacy';
-        } catch (e) {
-            return true;
-        }
+        // 未存过（null）或存储不可用时按磁盘模式（原 catch 分支同样返回 true）
+        return kvGet(AI_CONFIG_MODE_KEY) !== 'legacy';
     }
 
     function notifyConfigStoreError(error) {
@@ -1213,12 +1212,7 @@ export function createAIPanel(options) {
     }
 
     function loadAIConfig() {
-        let stored = {};
-        try {
-            stored = JSON.parse(localStorage.getItem(AI_CONFIG_KEY) || '{}') || {};
-        } catch (e) {
-            stored = {};
-        }
+        const stored = kvGetJson(AI_CONFIG_KEY, {}) || {};
         return normalizeAIConfig(stored);
     }
 
@@ -1267,9 +1261,7 @@ export function createAIPanel(options) {
         // localStorage 永远保留一份镜像：旧版本回退、WebView2 重置、降级路径都靠它。
         // 但**不写密钥**：磁盘那份是 DPAPI 密文，镜像再存明文等于把加密绕过去
         // （备份 / 云同步会连 LevelDB 一起带走）。回退路径缺密钥要重填，这个代价接受。
-        try {
-            localStorage.setItem(AI_CONFIG_KEY, mirrorWithoutKeys(text));
-        } catch (e) {}
+        kvSet(AI_CONFIG_KEY, mirrorWithoutKeys(text)); // 写不进（配额满）只影响回退路径
         if (!configUseDisk()) return;
         // sealed 时同样按内容去重：基线在 bootstrap 的 sealed 分支里设好，配置没变就不写。
         // 去掉这条的话，发第一条消息触发的 persistSessions 就会把镜像覆写上去。
@@ -2070,11 +2062,7 @@ export function createAIPanel(options) {
     // ---------- 存储模式与会话加载 ----------
 
     function storageMode() {
-        try {
-            return localStorage.getItem(AI_STORAGE_MODE_KEY) === 'legacy' ? 'legacy' : 'disk';
-        } catch (e) {
-            return 'disk';
-        }
+        return kvGet(AI_STORAGE_MODE_KEY) === 'legacy' ? 'legacy' : 'disk';
     }
 
     let storageFallback = false;
@@ -2083,12 +2071,8 @@ export function createAIPanel(options) {
     }
 
     function legacySessionsRaw() {
-        try {
-            const raw = JSON.parse(localStorage.getItem(AI_SESSIONS_KEY) || '[]');
-            return Array.isArray(raw) ? raw : [];
-        } catch (e) {
-            return [];
-        }
+        const raw = kvGetJson(AI_SESSIONS_KEY, []);
+        return Array.isArray(raw) ? raw : [];
     }
 
     function loadLegacySessions(rawList) {
@@ -2130,31 +2114,24 @@ export function createAIPanel(options) {
     }
 
     function migratedSessionIDs() {
-        try {
-            const raw = JSON.parse(localStorage.getItem(AI_SESSION_MIGRATED_IDS_KEY) || '[]');
-            return new Set(Array.isArray(raw) ? raw.map((id) => aiTextOf(id)).filter(Boolean) : []);
-        } catch (e) {
-            return new Set();
-        }
+        const raw = kvGetJson(AI_SESSION_MIGRATED_IDS_KEY, []);
+        return new Set(Array.isArray(raw) ? raw.map((id) => aiTextOf(id)).filter(Boolean) : []);
     }
 
     function markMigratedSessionIDs(ids) {
-        try {
-            const set = migratedSessionIDs();
-            for (const id of ids || []) if (id) set.add(aiTextOf(id));
-            localStorage.setItem(AI_SESSION_MIGRATED_IDS_KEY, JSON.stringify(Array.from(set).slice(-2000)));
-        } catch (e) {}
+        const set = migratedSessionIDs();
+        for (const id of ids || []) if (id) set.add(aiTextOf(id));
+        // 只留最近 2000 条：迁移标记是尽力而为的去重辅助，写不进不影响迁移本身
+        kvSetJson(AI_SESSION_MIGRATED_IDS_KEY, Array.from(set).slice(-2000));
     }
 
     // 旧 localStorage 数据保留 30 天供回退；到期后清理（回退开关置 legacy 时不清理）。
     function cleanupLegacySessions() {
         if (storageMode() === 'legacy') return;
-        try {
-            const at = Number(localStorage.getItem(AI_SESSION_MIGRATED_AT_KEY)) || 0;
-            if (!at || Date.now() - at < AI_LEGACY_KEEP_DAYS * 86400000) return;
-            localStorage.removeItem(AI_SESSIONS_KEY);
-            localStorage.removeItem(AI_SESSION_MIGRATED_IDS_KEY);
-        } catch (e) {}
+        const at = Number(kvGet(AI_SESSION_MIGRATED_AT_KEY)) || 0;
+        if (!at || Date.now() - at < AI_LEGACY_KEEP_DAYS * 86400000) return;
+        kvRemove(AI_SESSIONS_KEY);
+        kvRemove(AI_SESSION_MIGRATED_IDS_KEY);
     }
 
     let sessionStoreErrorAt = 0;
@@ -2392,11 +2369,9 @@ export function createAIPanel(options) {
                     metas = await sessionStore.loadMetas();
                 }
                 markMigratedSessionIDs(metas.map((meta) => meta.id));
-                try {
-                    if (!localStorage.getItem(AI_SESSION_MIGRATED_AT_KEY)) {
-                        localStorage.setItem(AI_SESSION_MIGRATED_AT_KEY, String(Date.now()));
-                    }
-                } catch (e) {}
+                if (!kvGet(AI_SESSION_MIGRATED_AT_KEY)) {
+                    kvSet(AI_SESSION_MIGRATED_AT_KEY, String(Date.now()));
+                }
             }
             if (metas.length) {
                 sessions = sessionStore.toStubs(metas, normalizeSession);
@@ -2578,13 +2553,18 @@ export function createAIPanel(options) {
 
     let storageFailAt = 0;
     function persistLegacySessions() {
+        let payload;
         try {
-            localStorage.setItem(AI_SESSIONS_KEY, JSON.stringify(sessions, (key, value) => (
+            // 下划线开头的字段是内存态的临时字段，不进整包快照（replacer 不能丢，kvSetJson 不支持）
+            payload = JSON.stringify(sessions, (key, value) => (
                 key && key.startsWith('_') ? undefined : value
-            )));
+            ));
         } catch (e) {
-            notifyStorageFailed();
+            notifyStorageFailed(); // 序列化失败：退化为只留内存态，并提示用户
+            saveAIConfig();
+            return;
         }
+        if (!kvSet(AI_SESSIONS_KEY, payload)) notifyStorageFailed(); // 配额满 / 隐私模式
         saveAIConfig();
     }
 
@@ -4881,7 +4861,10 @@ export function createAIPanel(options) {
         if (body.dataset.renderSig === sig) return;
         const prevTop = body.scrollTop;
         body.classList.add('ai-md');
-        body.innerHTML = renderMarkdown(text);
+        // 思考链里的 svg/html 围栏是 AI 推理时写的代码示例，不是要渲染的图；可视化占位只在
+        // 最终回答挂载，思考里的占位永远挂不上，会一直显示「正在生成可视化…」。这里关掉 widget，
+        // 按普通代码块（仍带高亮）显示。
+        body.innerHTML = renderMarkdown(text, {widgets: false});
         // 思考链是弱化的灰色区域：代码块只留代码区，不挂「js + 复制」工具栏（那行比代码本身还跳）
         if (!streaming) enhanceAICodeBlocks(body, {noBar: true});
         resolveAIImages(body);
@@ -5749,6 +5732,9 @@ export function createAIPanel(options) {
 
         // 懒渲染：仅「展开且当前是渲染视图」时才跑 markdown，结果按 key 缓存，重放零成本。
         let ensureMd = null;
+        // 「查看渲染/查看原文」切换按钮：只在卡片展开后才有意义（收起时正文 hidden，
+        // 点了看不到任何变化）。提升到外层，展开/收起时同步显隐。
+        let viewToggle = null;
         if (mdEligible) {
             const mdView = document.createElement('div');
             mdView.className = 'ai-md ai-app-msg-md';
@@ -5772,9 +5758,11 @@ export function createAIPanel(options) {
             };
             if (expanded && !showRaw) ensureMd();
 
-            const viewToggle = document.createElement('button');
+            viewToggle = document.createElement('button');
             viewToggle.type = 'button';
             viewToggle.className = 'ai-app-msg-toggle ai-app-msg-view-toggle';
+            // 未展开时先藏起来，展开时再显示（见下方 toggle 的 click 处理）
+            viewToggle.classList.toggle('hidden', !expanded);
             const viewToggleText = document.createElement('span');
             viewToggleText.textContent = showRaw ? '查看渲染' : '查看原文';
             viewToggle.appendChild(viewToggleText);
@@ -5803,6 +5791,8 @@ export function createAIPanel(options) {
             body.classList.toggle('hidden', !next);
             toggle.classList.toggle('expanded', next);
             toggleText.textContent = next ? '收起指令' : '查看指令';
+            // 渲染/原文切换只在展开时有意义：收起时正文 hidden，按钮点了没反馈
+            if (viewToggle) viewToggle.classList.toggle('hidden', !next);
             if (next && ensureMd) ensureMd();
         });
 
@@ -12286,12 +12276,37 @@ async function requestApproval(session, toolMessage, info) {
             else renderSideChatInto(host, sessionId, true);
             return;
         }
+        // 展开→折叠的状态翻转：整卡重建后新节点一出生就折叠，纯 CSS transition 不会触发。
+        // 用 Web Animations 从旧高度补一段收缩（工具卡跑完自动折起时消息区不再瞬间跳一截）。
+        const oldCard = wrap.querySelector('.ai-tool-card');
+        const wasExpanded = !!(oldCard && !oldCard.classList.contains('collapsed') && oldCard.querySelector('.ai-tool-body'));
+        const oldHeight = wasExpanded ? oldCard.getBoundingClientRect().height : 0;
         wrap.innerHTML = '';
         renderToolMessage(wrap, toolMessage, undefined, session);
+        const newCard = wrap.querySelector('.ai-tool-card');
+        let foldAnim = null;
+        if (wasExpanded && newCard && newCard.classList.contains('collapsed') && oldHeight > 0) {
+            const newHeight = newCard.getBoundingClientRect().height;
+            const reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+            // height 动画参与布局、逐帧改变 scrollHeight：下方要逐帧补底（见 follow）。
+            if (shouldAnimateLayout(oldHeight, newHeight, reduce, typeof newCard.animate === 'function')) {
+                foldAnim = newCard.animate(heightKeyframes(oldHeight, newHeight), LAYOUT_MOTION_OPTIONS);
+            }
+        }
         // 卡片原位更新后高度可能变化（如 diff 展开）：跟随底部，避免把文档末尾的流式状态条顶出视口
         if (forPanel) {
             if (stickBottom) scrollToBottom(false);
             else updateScrollButton();
+            // 折叠动画期间卡片布局高度持续变小：贴底态逐帧跟，否则动画结束停在离底部一截的位置。
+            // 用户上滚会解除 stickBottom，跟随自然停止，不夺滚动权。
+            if (foldAnim) {
+                const follow = () => {
+                    if (foldAnim.playState === 'finished') return;
+                    if (stickBottom) scrollToBottom(false);
+                    requestAnimationFrame(follow);
+                };
+                requestAnimationFrame(follow);
+            }
         } else {
             stickHostScroll(host);
         }
@@ -14756,7 +14771,6 @@ async function requestApproval(session, toolMessage, info) {
     // ---------- 双层级模型选择器（搜索 + 按账号分组 + 推理等级） ----------
 
     let modelListPickerEl = null;
-    let modelListPickerDismiss = null;
     let usagePopoverEl = null;
     let usagePopoverDismiss = null;
     // 页面级浮层的弹层栈条目（body 浮层，popover 档）：Esc 由栈按层序退
@@ -14767,11 +14781,6 @@ async function requestApproval(session, toolMessage, info) {
         if (modelListStackHandle) {
             modelListStackHandle.dispose();
             modelListStackHandle = null;
-        }
-        if (modelListPickerDismiss) {
-            const dispose = modelListPickerDismiss;
-            modelListPickerDismiss = null;
-            dispose();
         }
         if (modelListPickerEl) {
             modelListPickerEl.remove();
@@ -14873,18 +14882,11 @@ async function requestApproval(session, toolMessage, info) {
         pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) + 'px';
         pop.style.top = top + 'px';
         pop.style.width = width + 'px';
-        const onDocMouseDown = (e) => {
-            if (modelListPickerEl && pop.contains(e.target)) return;
-            closeModelListPicker();
-        };
-        modelListPickerDismiss = () => {
-            document.removeEventListener('mousedown', onDocMouseDown, true);
-        };
-        document.addEventListener('mousedown', onDocMouseDown, true);
-        // Esc 归全局弹层栈（body 浮层，popover 档）
+        // Esc 与外点关闭都归全局弹层栈（body 浮层，popover 档）
         if (modelListStackHandle) modelListStackHandle.dispose();
         modelListStackHandle = overlayStack.open({
             id: 'ai-model-list-pop', kind: 'popover', el: pop,
+            closeOnOutsideClick: true,
             onClose: () => { closeModelListPicker(); return true; },
         });
         syncCount();
@@ -15128,6 +15130,8 @@ async function requestApproval(session, toolMessage, info) {
         showNote,
         sendAppMessage,
         showContextMenu,
+        // 「维护认知索引」项随 aiCognition 开关显隐（settings 为闭包活引用）
+        getSettings: () => settings,
         // Git 快捷操作一次性窄豁免：动作发送前给会话打令牌（auto 档常规 git 写命令免逐条审批）
         setGitFlowToken,
     });
@@ -15950,31 +15954,24 @@ async function requestApproval(session, toolMessage, info) {
         if (!text.trim() && !items.length) {
             // 输入框已被清空（用户主动清空 / 发送后清空）：删除该会话草稿，而不是存一条空的。
             drafts.delete(sessionId);
-            try { localStorage.removeItem(draftLSKey(sessionId)); } catch (e) {}
+            kvRemove(draftLSKey(sessionId));
             return;
         }
         drafts.set(sessionId, {text, attachments: items});
-        try {
-            if (text.trim()) localStorage.setItem(draftLSKey(sessionId), JSON.stringify({text}));
-            else localStorage.removeItem(draftLSKey(sessionId));
-        } catch (e) {}
+        if (text.trim()) kvSetJson(draftLSKey(sessionId), {text});
+        else kvRemove(draftLSKey(sessionId));
     }
 
     function loadComposerDraft(sessionId, session) {
         let draft = sessionId ? drafts.get(sessionId) : null;
         if (!draft && sessionId) {
             // 内存里没有（重开面板 / 重启后的首次切换）：从 localStorage 兜底恢复文本草稿
-            try {
-                const raw = localStorage.getItem(draftLSKey(sessionId));
-                if (raw) {
-                    const parsed = JSON.parse(raw);
-                    const text = parsed && typeof parsed.text === 'string' ? parsed.text : '';
-                    if (text.trim()) {
-                        draft = {text, attachments: []};
-                        drafts.set(sessionId, draft);
-                    }
-                }
-            } catch (e) {}
+            const parsed = kvGetJson(draftLSKey(sessionId), null);
+            const text = parsed && typeof parsed.text === 'string' ? parsed.text : '';
+            if (text.trim()) {
+                draft = {text, attachments: []};
+                drafts.set(sessionId, draft);
+            }
         }
         if (!draft && session && isVirginSession(session)) {
             // 本会话没有自己的草稿：接住它所属工作区里暂存的输入——上一个空会话
@@ -15992,7 +15989,7 @@ async function requestApproval(session, toolMessage, info) {
     function dropComposerDraft(sessionId) {
         if (!sessionId) return;
         drafts.delete(sessionId);
-        try { localStorage.removeItem(draftLSKey(sessionId)); } catch (e) {}
+        kvRemove(draftLSKey(sessionId));
     }
 
     // 把某个会话当前的输入草稿转存到它所属工作区的草稿槽（删空会话前调用）。
@@ -16005,10 +16002,8 @@ async function requestApproval(session, toolMessage, info) {
         if (!text.trim() && !attachments.length) return;
         const key = aiWorkspaceKey(sessionWorkspacePath(session));
         workspaceDrafts.set(key, {text, attachments});
-        try {
-            if (text.trim()) localStorage.setItem(wsDraftLSKey(key), JSON.stringify({text}));
-            else localStorage.removeItem(wsDraftLSKey(key));
-        } catch (e) {}
+        if (text.trim()) kvSetJson(wsDraftLSKey(key), {text});
+        else kvRemove(wsDraftLSKey(key));
     }
 
     // 取走该工作区暂存的草稿（取用即清空）：交给这个工作区里新建 / 复用的空会话。
@@ -16017,18 +16012,13 @@ async function requestApproval(session, toolMessage, info) {
         let draft = workspaceDrafts.get(key) || null;
         if (!draft) {
             // 重开面板 / 重启后内存槽没了：只剩文本能从 localStorage 恢复（附件本就不落盘）
-            try {
-                const raw = localStorage.getItem(wsDraftLSKey(key));
-                if (raw) {
-                    const parsed = JSON.parse(raw);
-                    const text = parsed && typeof parsed.text === 'string' ? parsed.text : '';
-                    if (text.trim()) draft = {text, attachments: []};
-                }
-            } catch (e) {}
+            const parsed = kvGetJson(wsDraftLSKey(key), null);
+            const text = parsed && typeof parsed.text === 'string' ? parsed.text : '';
+            if (text.trim()) draft = {text, attachments: []};
         }
         if (!draft) return null;
         workspaceDrafts.delete(key);
-        try { localStorage.removeItem(wsDraftLSKey(key)); } catch (e) {}
+        kvRemove(wsDraftLSKey(key));
         return draft;
     }
 
@@ -16038,10 +16028,8 @@ async function requestApproval(session, toolMessage, info) {
         if (!sessionId) return;
         const value = String(text == null ? '' : text);
         drafts.set(sessionId, {text: value, attachments: []});
-        try {
-            if (value.trim()) localStorage.setItem(draftLSKey(sessionId), JSON.stringify({text: value}));
-            else localStorage.removeItem(draftLSKey(sessionId));
-        } catch (e) {}
+        if (value.trim()) kvSetJson(draftLSKey(sessionId), {text: value});
+        else kvRemove(draftLSKey(sessionId));
     }
 
     // 正在等正文补上来的目标会话：连点多个未加载会话时，只让最后一次点击落地
@@ -18481,11 +18469,20 @@ async function requestApproval(session, toolMessage, info) {
     // 只列「**已排入**信箱、等轮边界注入」的通知：子代理回执 / 提问、后台命令与终端
     // 退出、会话间投递、计时器**到点**后的唤醒通知（到点即走 deliverAgentNotice 入箱，
     // 出现在这里；**没到点的运行中计时器不算信箱**——它还没产生消息，且「计时」胶囊
-    // 已有完整入口）。角标 = 挂起通知合计；点击弹 chips-pop（kind=mailbox），
-    // 行按会话分组跳会话。用户手动排队的消息不在这里——composer 队列条是它的地盘。
+    // 已有完整入口）。角标 = **当前会话**的挂起通知数；点击弹 chips-pop（kind=mailbox），
+    // 只列当前会话的通知。用户手动排队的消息不在这里——composer 队列条是它的地盘。
+    // 只显示当前会话（作者 2026-11-23 裁定）：别的会话（含后台会话）的通知不串到本面板，
+    // 切到那个会话才看得到。切会话时 syncActiveSessionUI → updateMailboxChip 会重算。
+    function pendingMailboxGroups() {
+        const session = currentSession();
+        const id = session ? session.id : '';
+        if (!id) return [];
+        return noticesMod.listPending().filter((group) => group.sessionId === id);
+    }
+
     function pendingMailboxCount() {
         let count = 0;
-        for (const group of noticesMod.listPending()) count += group.items.length;
+        for (const group of pendingMailboxGroups()) count += group.items.length;
         return count;
     }
 
@@ -18547,8 +18544,8 @@ async function requestApproval(session, toolMessage, info) {
         if (!host) return;
         host.innerHTML = '';
         let rows = 0;
-        // ① 信箱通知：content 首行做摘要，kind 决定 meta 行的小徽标与配色
-        for (const group of noticesMod.listPending()) {
+        // ① 信箱通知：只列当前会话的（与角标同源），content 首行做摘要，kind 决定 meta 行的小徽标与配色
+        for (const group of pendingMailboxGroups()) {
             for (const notice of group.items) {
                 rows += 1;
                 mailboxRow(host, group.sessionId, notice);
@@ -18557,7 +18554,7 @@ async function requestApproval(session, toolMessage, info) {
         if (!rows) {
             const empty = document.createElement('div');
             empty.className = 'ai-chips-empty';
-            empty.textContent = '信箱空：没有挂着待注入的会话消息';
+            empty.textContent = '信箱空：当前会话没有挂着待注入的消息';
             host.appendChild(empty);
         }
     }

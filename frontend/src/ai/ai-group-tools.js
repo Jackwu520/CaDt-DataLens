@@ -5,6 +5,7 @@
 // 路径边界一律 resolveWithinRoot（群所属工作区，越界即拒）。
 // 本模块只放纯函数：工具清单过滤、API 消息形状、参数摘要、系统提示词片段。可单测。
 import {AI_TOOL_DEFS} from './ai-tool-defs.js';
+import {parseJson} from '../core/json-safe.js';
 
 // 成员可用的只读工具名（不含写工具 / 命令 / 联网——群成员的权限面固定为此清单）
 export const MEMBER_TOOL_NAMES = ['read_file', 'list_dir', 'search_text', 'glob'];
@@ -53,7 +54,7 @@ export function toolResultApiMessage(call, content) {
 export function toolArgsSummary(name, argsJson) {
     let args = {};
     try {
-        args = typeof argsJson === 'string' ? (JSON.parse(argsJson || '{}') || {}) : (argsJson || {});
+        args = typeof argsJson === 'string' ? (parseJson(argsJson, {}) || {}) : (argsJson || {});
     } catch (e) {
         args = {};
     }

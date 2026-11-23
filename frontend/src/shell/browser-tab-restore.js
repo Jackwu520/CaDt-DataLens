@@ -17,6 +17,9 @@
 // 恢复前先问 Go 侧 BrowserState——个人浏览器实例 id 全进程唯一，已在别的窗口活着
 // 就跳过（WebView2 不允许两个 environment 共用同一 user data 目录，第二个必失败）。
 
+import {parseJson} from '../core/json-safe.js';
+import {kvGet, kvGetJson, kvRemove, kvSet, kvSetJson} from '../core/kv-store.js';
+
 // ---- 纯函数与常量（导出供单测）----
 export const BROWSER_TABS_KEY = 'cadt.browser-tabs.v1';
 export const BROWSER_TABS_OWNER_KEY = 'cadt.browser-tabs.owner';
@@ -49,12 +52,10 @@ export function serializeBrowserTabs(urls) {
 
 /** 快照反序列化：坏数据一律当空列表（恢复路径宁可不开标签也不能崩）。 */
 export function parseBrowserUrls(text) {
-    try {
-        const data = JSON.parse(String(text || ''));
-        if (data && typeof data === 'object' && !Array.isArray(data)) {
-            return normalizeBrowserUrls(data.urls);
-        }
-    } catch (e) { /* 坏 JSON / 空串当空列表 */ }
+    const data = parseJson(text, null);
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+        return normalizeBrowserUrls(data.urls);
+    }
     return [];
 }
 
@@ -93,7 +94,7 @@ function auxWindowNoSession() {
 }
 
 function readSavedUrls() {
-    return parseBrowserUrls(localStorage.getItem(BROWSER_TABS_KEY));
+    return parseBrowserUrls(kvGet(BROWSER_TABS_KEY));
 }
 
 // 写盘路径的总闸：没持有过实例的窗口、悬浮窗 / 控制台，一律什么都不做。
@@ -103,10 +104,8 @@ function writeUrls(urls, opts) {
     lastUrls = normalizeBrowserUrls(urls);
     const write = () => {
         saveTimer = 0;
-        try {
-            localStorage.setItem(BROWSER_TABS_KEY, serializeBrowserTabs(lastUrls));
-        } catch (e) {
-            log('warn', '浏览器标签快照写入失败：' + ((e && (e.stack || e.message)) || e));
+        if (!kvSet(BROWSER_TABS_KEY, serializeBrowserTabs(lastUrls))) {
+            log('warn', '浏览器标签快照写入失败：localStorage 不可用或配额已满');
         }
     };
     clearTimeout(saveTimer);
@@ -116,12 +115,8 @@ function writeUrls(urls, opts) {
 
 // ---- owner 租约 ----
 function readOwner() {
-    try {
-        const owner = JSON.parse(localStorage.getItem(BROWSER_TABS_OWNER_KEY) || 'null');
-        return owner && typeof owner === 'object' ? owner : null;
-    } catch (e) {
-        return null;
-    }
+    const owner = kvGetJson(BROWSER_TABS_OWNER_KEY, null);
+    return owner && typeof owner === 'object' ? owner : null;
 }
 
 function startHeartbeat() {
@@ -134,7 +129,7 @@ function startHeartbeat() {
                 return;
             }
             owner.ts = Date.now();
-            localStorage.setItem(BROWSER_TABS_OWNER_KEY, JSON.stringify(owner));
+            kvSetJson(BROWSER_TABS_OWNER_KEY, owner);
         } catch (e) {
             stopHeartbeat();
         }
@@ -150,22 +145,16 @@ function stopHeartbeat() {
 
 // CAS 获取：owner 不存在或已过期才写入自己；成功即开始心跳。localStorage 不可用时放弃。
 function acquireLease() {
-    try {
-        if (leaseAlive(readOwner(), Date.now())) return false;
-        localStorage.setItem(BROWSER_TABS_OWNER_KEY, JSON.stringify({id: windowId, ts: Date.now()}));
-        startHeartbeat();
-        return true;
-    } catch (e) {
-        return false;
-    }
+    if (leaseAlive(readOwner(), Date.now())) return false;
+    if (!kvSetJson(BROWSER_TABS_OWNER_KEY, {id: windowId, ts: Date.now()})) return false;
+    startHeartbeat();
+    return true;
 }
 
 function releaseLease() {
     stopHeartbeat();
-    try {
-        const owner = readOwner();
-        if (owner && owner.id === windowId) localStorage.removeItem(BROWSER_TABS_OWNER_KEY);
-    } catch (e) { /* localStorage 不可用时无从释放，租约会随 TTL 过期 */ }
+    const owner = readOwner();
+    if (owner && owner.id === windowId) kvRemove(BROWSER_TABS_OWNER_KEY);
 }
 
 // ---- 保存时机（openBrowserTab / browser-nav / closeDocNow 三个通知点调用）----
@@ -244,9 +233,8 @@ window.addEventListener('pagehide', () => {
         saveTimer = 0;
     }
     if (!auxWindowNoSession() && heldPersonal) {
-        try {
-            localStorage.setItem(BROWSER_TABS_KEY, serializeBrowserTabs(lastUrls));
-        } catch (e) { /* localStorage 不可用时放弃，防抖路径大概率已写过 */ }
+        // localStorage 不可用时放弃：防抖路径大概率已写过
+        kvSet(BROWSER_TABS_KEY, serializeBrowserTabs(lastUrls));
     }
     releaseLease();
 });

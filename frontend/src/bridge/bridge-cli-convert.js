@@ -1,6 +1,7 @@
 // CLI 转换模式：隐藏窗口加载前端格式层，转换完立即退出（--convert）。
 // 从 bridge-ui.js 拆出。
 import {formats, pluginFormats, detectFormat} from '../core/formats.js';
+import {parseJson} from '../core/json-safe.js';
 
 export function createBridgeCliConvert(deps) {
 
@@ -27,12 +28,8 @@ async function maybeRunConvertJob() {
         return false;
     }
     if (!raw) return false;
-    let req;
-    try {
-        req = JSON.parse(raw);
-    } catch (e) {
-        return false;
-    }
+    const req = parseJson(raw, null);
+    if (!req || typeof req !== 'object') return false;
     let target = null;
     let targetError = '';
     try {

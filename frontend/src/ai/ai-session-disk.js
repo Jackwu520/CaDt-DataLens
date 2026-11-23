@@ -25,6 +25,7 @@ import {
     aiSafeFileStem,
 } from './ai-constants.js';
 import {isTransientSession} from './ai-session-scope.js';
+import {newId} from '../core/id.js';
 
 // ---------- 磁盘适配 ----------
 
@@ -38,7 +39,8 @@ export const SESSION_TOO_LARGE_PREFIX = 'session-too-large:';
 export function createSessionDiskStore(options) {
     const backend = options.backend || {};
     const onTidy = typeof options.onTidy === 'function' ? options.onTidy : null;
-    const genId = options.genId || ((prefix) => prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 8));
+    // genId 保留为可注入覆盖点（测试与真实存储校验假 id），默认形状见 core/id.js。
+    const genId = options.genId || ((prefix) => newId(prefix));
     const onError = typeof options.onError === 'function' ? options.onError : () => {};
     const queues = new Map();
     const pending = new Set();

@@ -111,6 +111,25 @@ function createOverlayStack() {
         }
     }
 
+    // 外点关闭：只看栈顶活层；点在 el 或 anchors 内放行（不关）。打开当帧由 pendingActivate 跳过。
+    // 返回 true = 本次点击关闭了一层。
+    function dispatchOutsideClick(e) {
+        const entry = findTopViable(new Set());
+        if (!entry || !entry.closeOnOutsideClick || entry.pendingActivate) return false;
+        const el = entry.el;
+        if (el && typeof el.contains === 'function' && el.contains(e.target)) return false;
+        for (const anchor of entry.anchors) {
+            // 字符串 = 选择器：每次动态判定（锚点重渲染后仍放行，如 AI 用量徽标）
+            if (typeof anchor === 'string') {
+                if (e.target && typeof e.target.closest === 'function' && e.target.closest(anchor)) return false;
+            } else if (anchor && typeof anchor.contains === 'function' && anchor.contains(e.target)) {
+                return false;
+            }
+        }
+        entry.handle.dispose();
+        return true;
+    }
+
     return {
         /**
          * 注册一个弹层。所有关闭路径（按钮/遮罩点击/外点/blur/resize）都应收口到 handle.dispose()。
@@ -130,6 +149,10 @@ function createOverlayStack() {
                 onClose: desc.onClose,
                 consumesEsc: desc.consumesEsc !== false,
                 isAlive: typeof desc.isAlive === 'function' ? desc.isAlive : null,
+                // 外点关闭：el 与 anchors 之外的 pointerdown 关闭本层（打开当帧不判定）
+                closeOnOutsideClick: !!desc.closeOnOutsideClick,
+                anchors: Array.isArray(desc.anchors) ? desc.anchors : (desc.anchor ? [desc.anchor] : []),
+                pendingActivate: !!desc.closeOnOutsideClick,
             };
             entries.push(entry);
             // underEl（遮罩）钉在档位地板；el 压在地板之上、按栈位排序
@@ -148,6 +171,10 @@ function createOverlayStack() {
                 },
             };
             entry.handle = handle;
+            // 打开当帧的 pointerdown 不触发外点关闭，兼容「点击自身开关打开」的 toggle 场景
+            if (entry.closeOnOutsideClick) {
+                setTimeout(() => { entry.pendingActivate = false; }, 0);
+            }
             return handle;
         },
         /** 栈顶条目（不含 handle），空栈返回 null。 */
@@ -169,12 +196,16 @@ function createOverlayStack() {
          * 不消费返回 false，事件照旧流向旧监听（未迁移层与元素级语义的兜底通道）。
          */
         dispatchEscape,
-        /** 安装唯一的全局 Esc 监听（window 捕获）。幂等；必须在任何弹层工厂创建之前调用。 */
+        dispatchOutsideClick,
+        /** 安装全局 Esc 与外点关闭监听（window 捕获）。幂等；必须在任何弹层工厂创建之前调用。 */
         install(target) {
             if (installed || !target || typeof target.addEventListener !== 'function') return;
             installed = true;
             target.addEventListener('keydown', (e) => {
                 dispatchEscape(e);
+            }, true);
+            target.addEventListener('pointerdown', (e) => {
+                dispatchOutsideClick(e);
             }, true);
         },
     };

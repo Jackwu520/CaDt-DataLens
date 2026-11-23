@@ -1,6 +1,7 @@
 // bridge-terminal-view.js：后台终端标签页视图：AI background_command 作业在内容区的只读视图。
 // 从 bridge-ui.js 拆出；依赖仍经 deps 延迟求值，不持有宿主状态。
 import {createVirtualTabDoc} from '../core/virtual-tab-doc.js';
+import {kvGet, kvSet} from '../core/kv-store.js';
 export function createBridgeTerminalView(deps) {
 
 // ===== 后台终端标签页（AI background_command 作业在内容区的视图）=====
@@ -10,7 +11,7 @@ export function createBridgeTerminalView(deps) {
 const BGTERM_SPLIT_KEY = 'datalens-bgterm-split';
 
 function bgTermSplitRatio() {
-    const raw = Number(localStorage.getItem(BGTERM_SPLIT_KEY));
+    const raw = Number(kvGet(BGTERM_SPLIT_KEY));
     if (!Number.isFinite(raw) || raw < 0.15 || raw > 0.85) return 0.34;
     return raw;
 }
@@ -118,7 +119,7 @@ function createBgTermView(doc) {
         if (!dragging) return;
         dragging = false;
         document.body.classList.remove('bgterm-dragging');
-        try { localStorage.setItem(BGTERM_SPLIT_KEY, String(doc.bgTermRatio)); } catch (e) {}
+        kvSet(BGTERM_SPLIT_KEY, String(doc.bgTermRatio)); // 存储不可用：会话内仍生效
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
     };

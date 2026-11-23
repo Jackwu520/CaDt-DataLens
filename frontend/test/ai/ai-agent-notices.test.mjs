@@ -18,8 +18,8 @@ function makeHarness(overrides) {
         // key 写错（session.id → item.id）在端到端里完全看不见，只能在这里抓。
         inboxWaiters: {notify: (ownerId) => calls.notified.push(ownerId)},
         sessionById: (id) => sessions.get(id) || null,
-        streamOf: () => (busy ? {sessionId: 's1'} : null),
-        compactOf: () => null,
+        streamOf: (id) => (opts.streamOf ? opts.streamOf(id) : (busy ? {sessionId: 's1'} : null)),
+        compactOf: (id) => (opts.compactOf ? opts.compactOf(id) : null),
         startSessionTurn: (s, text, options) => {
             calls.turns.push({sessionId: s.id, text, options});
             return opts.turnResult ? opts.turnResult : Promise.resolve({ok: true});
@@ -366,6 +366,29 @@ test('session_list：excludeSessionId 只排发起方；null 表示不排除（�
     // 全局入口（侧栏 / ＋菜单）：不排除任何人，当前会话可选
     const global = h.notices.listSessionsForSend({allWorkspaces: true, excludeSessionId: null}).map((row) => row.id);
     assert.deepEqual(global, ['s1', 's2', 's3']);
+});
+
+test('session_list：state / unreadOnly / titleContains 过滤（可叠加，非法 state 当不过滤）', () => {
+    const a = {id: 's1', title: '会话一', messages: [], archivedAt: 0, updatedAt: 4};
+    const b = {id: 's2', title: '构建 build 任务', messages: [], archivedAt: 0, updatedAt: 3, unread: true};
+    const c = {id: 's3', title: 'BUILD 报告', messages: [], archivedAt: 0, updatedAt: 2};
+    const h = makeHarness({
+        sessions: () => [a, b, c],
+        workspaceKey: () => 'ws',
+        // s2 运行中、s3 压缩中、s1（当前会话）空闲
+        streamOf: (id) => (id === 's2' ? {sessionId: 's2'} : null),
+        compactOf: (id) => (id === 's3' ? {sessionId: 's3'} : null),
+    });
+    const ids = (opts) => h.notices.listSessionsForSend(Object.assign({allWorkspaces: true}, opts)).map((row) => row.id);
+    assert.deepEqual(ids({}), ['s2', 's3'], '默认排除当前会话 s1');
+    assert.deepEqual(ids({state: 'streaming'}), ['s2'], 'state=streaming 只留运行中');
+    assert.deepEqual(ids({state: 'compacting'}), ['s3'], 'state=compacting 只留压缩中');
+    assert.deepEqual(ids({state: 'idle'}), [], 's1 是当前会话被排除，空闲列表为空');
+    assert.deepEqual(ids({state: 'garbage'}), ['s2', 's3'], '非法 state 当不过滤');
+    assert.deepEqual(ids({unreadOnly: true}), ['s2'], 'unreadOnly 只留未读');
+    assert.deepEqual(ids({titleContains: 'build'}), ['s2', 's3'], '标题过滤不区分大小写');
+    assert.deepEqual(ids({state: 'streaming', unreadOnly: true, titleContains: '构建'}), ['s2'], '多条件叠加取交集');
+    assert.ok(h.notices.sessionListText({state: 'idle'}).includes('没有符合条件'), '空结果给出明确提示');
 });
 
 test('buildBgJobExitNotice：退出码 / 命令截断 / 后续动作提示', () => {

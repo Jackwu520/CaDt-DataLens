@@ -5,6 +5,7 @@
 // 对话框族、行式下拉、设置搜索已拆到同目录兄弟模块，经 Object.create 委托同一 deps。
 import {createActivityLog} from '../core/activity-log.js';
 import {iconSvg} from '../core/icons.js';
+import {kvGetJson} from '../core/kv-store.js';
 import {isDocReadOnly} from '../core/readonly.js';
 import {CODE_SHOT_RADII, CODE_SHOT_SCALES} from '../core/code-shot.js';
 import {createSettingsDialogs} from './settings-dialogs.js';
@@ -763,8 +764,8 @@ function applyRemoteSettings(values) {
 // 处理「广播事件在设置页未打开时到达、但 localStorage 是共享的」这类场景；若本地存储不共享，
 // 读到的仍是旧值，此时纯靠事件广播（applyRemoteSettings）保证正确，本函数无副作用。
 function reloadSettingsFromDisk() {
-    let stored = null;
-    try { stored = JSON.parse(localStorage.getItem(deps.settingsKey) || 'null'); } catch (e) {}
+    // 只读一次本窗口 localStorage 快照；读不到 / 损坏时保持现状（正确性由事件广播兜底）
+    const stored = kvGetJson(deps.settingsKey, null);
     if (!stored || typeof stored !== 'object') return;
     applyRemoteSettings(stored);
 }

@@ -6,6 +6,7 @@
 // 引用与事件绑定（本模块 els、ai-mcp-settings 的 el）跨开关标签页始终有效。
 // 配置读写走 Go（WebToolsConfigGet / Save / ClearKey）。
 import {createInput, createSelect, createSwitch} from '../core/form-controls.js';
+import {copyTextToClipboard} from '../core/clipboard.js';
 import {pageHeader, statusBadge, stateBlock} from '../app-pages/ui-kit.js';
 import {
     DEFAULT_PROVIDER_BASE_URL,
@@ -489,9 +490,9 @@ export function createSettingsPaneExternalTools(deps) {
     }
 
     function copyText(text) {
-        navigator.clipboard.writeText(text)
-            .then(() => flash('已复制到剪贴板'))
-            .catch(() => flash('复制失败：剪贴板不可用', true));
+        // 先 Go 绑定再 Web API（core/clipboard.js）；两者都失败才提示
+        copyTextToClipboard(text, {goCopy: typeof backend.CopyText === 'function' ? (value) => backend.CopyText(value) : null})
+            .then((ok) => flash(ok ? '已复制到剪贴板' : '复制失败：剪贴板不可用', !ok));
     }
 
     // 写 mcp.json 前**重读一次**（2026-11-23 审查 H2）：桌面卡片与 ai-mcp-settings 管理同一份

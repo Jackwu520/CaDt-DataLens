@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"datalens/internal/appdata"
 )
 
 // ClearResult 单个条目的清除结果。
@@ -221,7 +223,7 @@ func (s *Service) readPendingRaw() []string {
 func (s *Service) writePending(ids []string) error {
 	path := s.pendingPath()
 	if path == "" {
-		return fmt.Errorf("无法定位应用数据目录")
+		return appdata.ErrNoRoot
 	}
 	unique := map[string]bool{}
 	list := make([]string, 0, len(ids))

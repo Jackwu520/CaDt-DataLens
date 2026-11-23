@@ -3,6 +3,7 @@
 // 依赖一律经 deps 延迟求值（调用方传 getter），不在创建期解构：
 // 这样既不依赖 main.js 的声明顺序，也不会把 let 状态拍成快照。
 import {defaultMediaMode} from '../core/formats.js';
+import {kvGetJson, kvRemove, kvSetJson} from '../core/kv-store.js';
 
 
 export function createSessionRestore(deps) {
@@ -28,12 +29,8 @@ function sessionPathKey(path) {
 }
 
 function readWorkspaceSessions() {
-    try {
-        const data = JSON.parse(localStorage.getItem(workspaceSessionsKey) || '{}');
-        return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-    } catch (e) {
-        return {};
-    }
+    const data = kvGetJson(workspaceSessionsKey, {});
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
 }
 
 function readWorkspaceSession(dir) {
@@ -90,7 +87,10 @@ function writeWorkspaceSession(sess) {
         keys.sort((a, b) => (Number(map[a] && map[a].savedAt) || 0) - (Number(map[b] && map[b].savedAt) || 0));
         for (const k of keys.slice(0, keys.length - WORKSPACE_SESSION_LIMIT)) delete map[k];
     }
-    localStorage.setItem(workspaceSessionsKey, JSON.stringify(map));
+    // 写不进（配额满 / 存储不可用）要留痕：否则「重启后布局没恢复」查不到任何线索
+    if (!kvSetJson(workspaceSessionsKey, map)) {
+        deps.logFrontend('warn', '工作区会话索引写入失败：localStorage 不可用或配额已满');
+    }
 }
 
 function serializeSplitSession(node, gidToIdx) {
@@ -180,10 +180,13 @@ function saveSessionNow(options) {
                     return false;
                 }
             }
-            localStorage.setItem(sessionKey, JSON.stringify(sess));
+            // 写不进（序列化失败 / 配额满）不能静默：旧快照会原地残留成「关掉的标签又回来」
+            if (!kvSetJson(sessionKey, sess)) {
+                deps.logFrontend('warn', '会话保存失败：快照未能写入 localStorage（序列化失败或配额已满）');
+            }
             writeWorkspaceSession(sess);
         } else {
-            localStorage.removeItem(sessionKey);
+            kvRemove(sessionKey);
         }
         return true;
     } catch (e) {
@@ -215,10 +218,8 @@ window.addEventListener('pagehide', () => {
 });
 
 function readSession() {
-    try {
-        const sess = JSON.parse(localStorage.getItem(sessionKey) || 'null');
-        if (sess && (sess.workspace || (Array.isArray(sess.groups) && sess.groups.length))) return sess;
-    } catch (e) {}
+    const sess = kvGetJson(sessionKey, null);
+    if (sess && (sess.workspace || (Array.isArray(sess.groups) && sess.groups.length))) return sess;
     return null;
 }
 

@@ -3,6 +3,7 @@
 // todoStates（const Map，引用稳定）与 DOM 表/回调经 ctx 注入。
 import {aiTextOf} from './ai-constants.js';
 import {iconSvg} from '../core/icons.js';
+import {kvGet, kvSet} from '../core/kv-store.js';
 
 // 新建会话状态时的默认收起态：默认收起（只看一行进度摘要），
 // 设置页「任务清单默认展开」打开后为展开。纯函数便于单测。
@@ -68,17 +69,12 @@ export function createAITodos(ctx) {
     const TODO_CURRENT_BADGE_KEY = 'datalens-ai-todos-current-badge';
 
     function currentBadgeEnabled() {
-        try {
-            return localStorage.getItem(TODO_CURRENT_BADGE_KEY) !== '0';
-        } catch (e) {
-            return true;
-        }
+        // 未存过（null）或存储不可用时按默认「开」——原实现 catch 里也是 true
+        return kvGet(TODO_CURRENT_BADGE_KEY) !== '0';
     }
 
     function setCurrentBadgeEnabled(on) {
-        try {
-            localStorage.setItem(TODO_CURRENT_BADGE_KEY, on ? '1' : '0');
-        } catch (e) {}
+        kvSet(TODO_CURRENT_BADGE_KEY, on ? '1' : '0');
     }
 
     function todoStateOf(session) {

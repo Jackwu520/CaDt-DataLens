@@ -768,18 +768,20 @@ export function parseMentions(text, memberNames) {
         .replace(/`[^`]*`/g, ' ');
     const names = (Array.isArray(memberNames) ? memberNames : []).filter(Boolean);
     let all = false;
-    const hit = [];
-    // \b 是 ASCII 词边界，跟在 CJK 后永不成立（@全体成员 后跟空格/标点/汉字都判不了界）；
-    // CJK 两个别名用「后不跟 ASCII 词字符」判定，all/everyone 保留 \b
-    if (/@(全体成员|所有人)(?!\w)|@(all|everyone)\b/i.test(cleaned)) all = true;
+    // 右边界：@别名后面不能紧跟 CJK / 字母 / 数字 / 下划线，否则「@全体成员好」会误判成 @all、
+    // 「@架构师」会误命中成员「架构」。\b 只认 ASCII，跟在 CJK 后永不成立，故显式写字符类。
+    const BOUND = '(?![A-Za-z0-9_\\u4e00-\\u9fff])';
+    if (new RegExp('@(全体成员|所有人)' + BOUND).test(cleaned) || /@(all|everyone)\b/i.test(cleaned)) all = true;
+    // 单次扫描原文：名字按长度降序排进 alternation（长名优先命中，@架构师 不会被 @架构 截断），
+    // 全局匹配天然按「文本出现序」返回，去重后即得 names——relayWakes 单条最多 @2 人截的是先写的两位。
     const sorted = [...names].sort((a, b) => b.length - a.length);
-    let rest = cleaned;
-    for (const name of sorted) {
-        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const re = new RegExp('@' + escaped);
-        if (re.test(rest)) {
-            hit.push(name);
-            rest = rest.replace(new RegExp('@' + escaped, 'g'), ' ');
+    const hit = [];
+    if (sorted.length) {
+        const alt = sorted.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+        const re = new RegExp('@(' + alt + ')' + BOUND, 'g');
+        let m;
+        while ((m = re.exec(cleaned)) !== null) {
+            if (!hit.includes(m[1])) hit.push(m[1]);
         }
     }
     return {all, names: hit};

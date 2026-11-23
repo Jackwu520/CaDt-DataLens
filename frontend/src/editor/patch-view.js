@@ -6,6 +6,7 @@
 // 本模块只负责渲染与交互，不重复实现补丁逻辑。
 
 import {createCheckbox, createSelect} from '../core/form-controls.js';
+import {el} from '../core/dom.js';
 import {isTabReadOnlyFixed, isTabReadOnlyLocked} from '../core/readonly.js';
 
 const MODE_ATOMIC = 'atomic';
@@ -18,13 +19,6 @@ const STATUS_LABEL = {
     unsupported: '不支持',
     missing: '文件缺失',
 };
-
-function el(tag, cls, text) {
-    const node = document.createElement(tag);
-    if (cls) node.className = cls;
-    if (text != null) node.textContent = text;
-    return node;
-}
 
 function formatCount(n) {
     return n > 0 ? '+' + n : '0';

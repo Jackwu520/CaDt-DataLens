@@ -11,6 +11,7 @@ import {createAIModelSettings} from './ai-model-settings.js';
 import {createAIPermissionSettings} from './ai-permission-settings.js';
 import {createAIUsageConfigDialog} from './ai-usage-config-dialog.js';
 import {createAIPreferenceSettings} from './ai-preference-settings.js';
+import {relativeTime} from '../core/humanize.js';
 import {createAISettingsIO} from './ai-settings-io.js';
 import {createAIPersonalizationSettings} from './ai-personalization-ui.js';
 import {
@@ -212,16 +213,7 @@ export function createAISettingsDialog(ctx) {
         renderWindowHints(entry);
     }
 
-    function relativeTime(ms) {
-        const diff = Date.now() - Number(ms || 0);
-        if (!(diff > 0)) return '刚刚';
-        const minutes = Math.floor(diff / 60000);
-        if (minutes < 1) return '刚刚';
-        if (minutes < 60) return minutes + ' 分钟前';
-        const hours = Math.floor(minutes / 60);
-        if (hours < 24) return hours + ' 小时前';
-        return Math.floor(hours / 24) + ' 天前';
-    }
+
 
     // 编辑器里的命中提示：这些窗口/能力是不是配置表给的，以及一个「按表重填」的出口
     function renderCatalogNote() {

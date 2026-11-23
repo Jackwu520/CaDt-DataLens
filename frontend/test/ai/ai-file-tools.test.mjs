@@ -115,6 +115,13 @@ test('humanSizeBytes: 分级与尾零去除', () => {
     assert.equal(humanSizeBytes(5 * 1024 * 1024), '5MB');
 });
 
+test('humanSizeBytes: 非有限值与负数返回空串（调用方据此不显示大小）', () => {
+    assert.equal(humanSizeBytes(-1), '');
+    assert.equal(humanSizeBytes(NaN), '');
+    assert.equal(humanSizeBytes(Infinity), '');
+    assert.equal(humanSizeBytes('bad'), '');
+});
+
 // —— globMatchPath ——
 
 test('globMatchPath: 文件名模式与路径模式', () => {

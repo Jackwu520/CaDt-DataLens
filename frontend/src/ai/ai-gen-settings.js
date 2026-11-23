@@ -8,6 +8,7 @@
 import {iconSvg} from '../core/icons.js';
 import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
 import {aiNowId} from './ai-constants.js';
+import {parseJson} from '../core/json-safe.js';
 import {
     buildGenConfigExport,
     buildGenVars,
@@ -527,12 +528,7 @@ export function createAIGenSettings(ctx, extras) {
                 maxBytes: 8 << 20,
             }));
             if (resp && resp.error) throw new Error(resp.error);
-            let parsed = null;
-            try {
-                parsed = JSON.parse(resp && resp.body || '');
-            } catch (e) {
-                parsed = null;
-            }
+            const parsed = parseJson(resp && resp.body, null);
             if (parsed && entry.errorPath) {
                 const errors = extractGenPath(parsed, entry.errorPath);
                 if (errors.length && String(errors[0]).trim()) throw new Error('服务端返回错误：' + String(errors[0]).trim());

@@ -16,11 +16,12 @@ export function createSettingsPaneAppPages(deps) {
     }
 
     // 渲染目录行：图标 + 标题 + 一句话说明 + 「打开」按钮（整行可点）。
+    // deps.settings 传给 appPageGroups：条件可见页（visibleWhen，如认知索引）按当前设置过滤。
     function renderAppPagesPane() {
         const host = document.getElementById('app-pages-list');
         if (!host) return;
         host.textContent = '';
-        for (const group of appPageGroups()) {
+        for (const group of appPageGroups(deps.settings)) {
             for (const page of group.pages) {
                 const row = document.createElement('div');
                 row.className = 'set-row app-pages-row';

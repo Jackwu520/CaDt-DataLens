@@ -1255,6 +1255,20 @@ export function createRunController(deps) {
         await execSteps(session, steps);
     }
 
+    // Maven 工具窗口入口：按 exe+args+cwd 起一个运行会话。复用 runProject 的门禁
+    // （isReadOnly / 并发上限）与会话机制，这里只补「首次确认」——按 lang 记一次。
+    async function runCommand({label, exe, args, cwd}) {
+        if (!deps.hasConfirmed('maven')) {
+            // confirmRunOnce 的文案是「执行 <label> 代码」，传 'Maven' 才通顺（不是 'Maven 目标'）。
+            const ok = await deps.confirmRun('Maven', 'maven');
+            if (!ok) return;
+        }
+        await runProject(
+            {root: cwd || '', kind: 'Maven', marker: 'pom.xml'},
+            {label: label || 'Maven', exe, args: args || [], cwd: cwd || ''},
+        );
+    }
+
     // ---------- 发给 AI 分析 ----------
 
     function askAI(session) {
@@ -1388,5 +1402,5 @@ export function createRunController(deps) {
         return e.message || String(e);
     }
 
-    return {mount, run, selfTest, showProjectChoice, currentLang, stop, togglePanel, isSupported, hasRunning, clearActive, closeAll};
+    return {mount, run, selfTest, showProjectChoice, currentLang, stop, togglePanel, isSupported, hasRunning, clearActive, closeAll, runCommand};
 }

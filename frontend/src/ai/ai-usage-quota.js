@@ -15,6 +15,7 @@ import {
     renderUsageVars,
     usageTemplatePresetCode,
 } from './ai-usage-templates.js';
+import {parseJson} from '../core/json-safe.js';
 
 // 沙箱单阶段（解析脚本 / 跑 extractor）的硬超时；查询整体另有 HTTP 超时兜底。
 const USAGE_WORKER_TIMEOUT_MS = 5000;
@@ -546,7 +547,7 @@ function loadSnapshotStore(storage) {
     try {
         const raw = storage.getItem(USAGE_SNAPSHOT_STORAGE_KEY);
         if (!raw) return {};
-        const parsed = JSON.parse(raw);
+        const parsed = parseJson(raw, null);
         return parsed && typeof parsed === 'object' ? parsed : {};
     } catch (_) {
         return {}; // 损坏即弃：快照只是展示缓存，重新查询即可

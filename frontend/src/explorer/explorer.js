@@ -1,3 +1,4 @@
+import {el} from '../core/dom.js';
 import {iconSvg} from '../core/icons.js';
 
 // 局部键 → 注册表键（原散落 SVG 已收编 core/icons.js）；svg 尺寸由 .sb-chev/.sb-icon/.sb-tool 的 CSS 规则统一
@@ -138,13 +139,6 @@ export function mergeChildren(node, entries, truncated, dirMtimeValue) {
         changed = true;
     }
     return changed;
-}
-
-function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
 }
 
 // verticalScrollFor 计算「把行滚进垂直视野」后的 scrollTop（对齐 IDEA：只垂直 reveal，横向滚动条不动）。

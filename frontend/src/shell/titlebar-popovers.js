@@ -7,6 +7,7 @@ import {createTitlebarGitBranch} from './titlebar-git-branch.js';
 import {createTitlebarProject} from './titlebar-project.js';
 import {createTitlebarRunConfig} from './titlebar-run-config.js';
 import {iconSvg} from '../core/icons.js';
+import {placePopover} from '../core/popover-position.js';
 
 export function createTitlebarPopovers(deps) {
 
@@ -28,19 +29,9 @@ function isToolbarPopOpen(pop) {
     return !!pop && !pop.classList.contains('hidden');
 }
 
+// 定位统一走 core/popover-position：底部优先、放不下钳到视口底部（与旧行为一致，不翻上方）。
 function positionToolbarPopover(pop, anchor) {
-    if (!pop || !anchor) return;
-    const rect = anchor.getBoundingClientRect();
-    const margin = 8;
-    const width = pop.offsetWidth;
-    const height = pop.offsetHeight;
-    let left = Math.min(rect.left, window.innerWidth - width - margin);
-    left = Math.max(margin, left);
-    let top = rect.bottom + 6;
-    if (top + height > window.innerHeight - margin) top = window.innerHeight - height - margin;
-    top = Math.max(margin, top);
-    pop.style.left = left + 'px';
-    pop.style.top = top + 'px';
+    placePopover(pop, anchor, {placement: 'bottom', gap: 6});
 }
 
 

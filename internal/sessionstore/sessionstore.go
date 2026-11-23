@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"datalens/internal/appdata"
 	"datalens/internal/atomfile"
 	"datalens/internal/recycle"
 	"datalens/internal/resourcelease"
@@ -173,7 +174,7 @@ func Default() (*Store, error) {
 	}
 	base := AppDataDir()
 	if base == "" {
-		return nil, errors.New("无法定位应用数据目录")
+		return nil, appdata.ErrNoRoot
 	}
 	return NewBucketed(filepath.Join(base, SessionsDirName)), nil
 }

@@ -11,6 +11,8 @@
 // - 颜色只用主题变量（--panel2/--border/--text/--muted/--accent/--on-accent/--green/--red/--warn）。
 
 import {createInput} from '../core/form-controls.js';
+import {copyTextToClipboard} from '../core/clipboard.js';
+import {randomIdSuffix} from '../core/id.js';
 import {iconSvg} from '../core/icons.js';
 import {overlayStack} from '../core/overlay-stack.js';
 
@@ -194,7 +196,7 @@ export function detailDrawer(o = {}) {
 
     let disposed = false;
     const handle = overlayStack.open({
-        id: 'app-page-drawer-' + Math.random().toString(36).slice(2, 8),
+        id: 'app-page-drawer-' + randomIdSuffix(6),
         kind: 'popover',
         el,
         onClose() {
@@ -213,26 +215,8 @@ export function detailDrawer(o = {}) {
     return {element: el, body, close, handle};
 }
 
-/** 完整时间（含年份）：YYYY-MM-DD HH:mm:ss。 */
-export function formatFullTime(ts) {
-    const d = ts instanceof Date ? ts : new Date(Number(ts) || 0);
-    if (isNaN(d.getTime())) return '—';
-    const p = (n) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
-
-/** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前 / 完整时间。 */
-export function relativeTime(ts) {
-    const t = Number(ts) || 0;
-    if (!t) return '—';
-    const diff = Date.now() - t;
-    if (diff < 0) return formatFullTime(t);
-    if (diff < 60_000) return '刚刚';
-    if (diff < 3_600_000) return Math.floor(diff / 60_000) + ' 分钟前';
-    if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + ' 小时前';
-    if (diff < 7 * 86_400_000) return Math.floor(diff / 86_400_000) + ' 天前';
-    return formatFullTime(t);
-}
+// 完整时间 / 相对时间：统一到 core/humanize.js，这里 re-export 供应用页面沿用。
+export {formatFullTime, relativeTime} from '../core/humanize.js';
 
 /**
  * 复制按钮：点击把 text 写入剪贴板并 flash 反馈。
@@ -249,13 +233,9 @@ export function copyButton(getText, o = {}) {
     if (o.label) btn.appendChild(document.createTextNode(' ' + String(o.label)));
     btn.addEventListener('click', async () => {
         const text = typeof getText === 'function' ? String(getText() || '') : '';
-        try {
-            if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(text);
-            else throw new Error('clipboard 不可用');
-            if (typeof o.flash === 'function') o.flash('已复制');
-        } catch (err) {
-            if (typeof o.flash === 'function') o.flash('复制失败', true);
-        }
+        // 统一走 core/clipboard.js：应用页面拿不到 Go 绑定，这里只有 Web API 这一跳
+        const ok = await copyTextToClipboard(text);
+        if (typeof o.flash === 'function') o.flash(ok ? '已复制' : '复制失败', !ok);
     });
     return btn;
 }

@@ -94,7 +94,7 @@ func Encode(plain string) (string, error) {
 // ReadFile 读取指定路径的配置并解出明文；文件不存在返回空串。
 func ReadFile(path string) (string, error) {
 	if path == "" {
-		return "", errors.New("无法定位应用数据目录")
+		return "", appdata.ErrNoRoot
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -125,7 +125,7 @@ func ReadFile(path string) (string, error) {
 // WriteFile 原子写入指定路径的配置（0600，Windows 上加密后落盘）。
 func WriteFile(path, data string) error {
 	if path == "" {
-		return errors.New("无法定位应用数据目录")
+		return appdata.ErrNoRoot
 	}
 	if len(data) > FileMax {
 		return fmt.Errorf("AI 配置超过 %d KB", FileMax/1024)
@@ -158,7 +158,7 @@ func Write(data string) error { return WriteFile(Path(), data) }
 func BackupSealed() (string, error) {
 	path := Path()
 	if path == "" {
-		return "", errors.New("无法定位应用数据目录")
+		return "", appdata.ErrNoRoot
 	}
 	info, err := os.Stat(path)
 	if err != nil {

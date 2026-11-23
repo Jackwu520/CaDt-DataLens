@@ -1,6 +1,8 @@
 // ai-constants.js：从 ai-panel.js 拆出的常量与纯辅助函数（无状态、无副作用）。
 // 消息/存储键、容量上限、工具白名单、时间与字数估算、图片元数据等。
 import {VISUAL_RULES} from '../core/visual-spec.js';
+import {formatBytes} from '../core/humanize.js';
+import {newId} from '../core/id.js';
 
 export const AI_CONFIG_KEY = 'datalens-ai';
 export const AI_SESSIONS_KEY = 'datalens-ai-sessions';
@@ -832,8 +834,9 @@ export function aiClampInt(value, min, max, fallback) {
     return aiClamp(n, min, max);
 }
 
+// aiNowId：带前缀的短 id（形状固定 5 位随机后缀，落盘数据里已有大量历史值，别改位数）。
 export function aiNowId(prefix) {
-    return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    return newId(prefix, {suffixLength: 5});
 }
 
 export function aiTextOf(value) {
@@ -901,20 +904,9 @@ export function aiFormatDuration(ms) {
     return aiDurationText(total);
 }
 
-// 字节数的人可读形态（9616029 → '9.2 MB'）：B/KB/MB/GB/TB，1024 进制；
-// ≥100 的档位取整（100 MB 没必要两位小数），GB 级保留 1 位精度。
-// 与 settings-pane-storage 的 formatBytes 同语义，但 AI 域不能反向 import settings，独立成纯函数。
+// 字节数的人可读形态（9616029 → '9.2 MB'）：实现统一到 core/humanize.js 的 formatBytes。
 export function aiFormatBytes(bytes) {
-    const value = Math.max(0, Number(bytes) || 0);
-    if (value < 1024) return value + ' B';
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    let size = value / 1024;
-    let index = 0;
-    while (size >= 1024 && index < units.length - 1) {
-        size /= 1024;
-        index += 1;
-    }
-    return size.toFixed(size >= 100 ? 0 : 1) + ' ' + units[index];
+    return formatBytes(bytes);
 }
 
 // 会话正文读取上限（与 internal/sessionstore 的 aiSessionReadLimit 镜像，改动必须两边同步）：

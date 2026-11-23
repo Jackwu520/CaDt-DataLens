@@ -13,7 +13,9 @@
 // 只按标题匹配（含 60 秒催办的「（仍在等待）」后缀），不动真正的「AI 任务失败」。
 // 就地修改并返回是否发生变化，供 load 决定是否写回 localStorage；抽成纯函数便于单测。
 import {overlayStack} from '../core/overlay-stack.js';
+import {placePopover} from '../core/popover-position.js';
 import {iconSvg} from '../core/icons.js';
+import {kvGetJson, kvSetJson} from '../core/kv-store.js';
 
 export function migrateApprovalKind(m) {
     if (m && m.kind === 'error' && /AI 待(审批|填写)/.test(String(m.title || ''))) {
@@ -39,7 +41,6 @@ export function createMessageCenter(ctx) {
     let messages = load();
     let seq = 0;
     let pop = null;
-    let dismissHandler = null;
     // 面板的弹层栈条目（togglePanel/closePanel 收口）
     let stackHandle = null;
     // 浮层定位函数（内容高度变化后重新调用，保证底部始终贴住按钮）
@@ -53,32 +54,23 @@ export function createMessageCenter(ctx) {
     const isLegacyDone = (m) => !!m && m.kind === 'success' && m.title === LEGACY_DONE_TITLE;
 
     function load() {
-        try {
-            const raw = JSON.parse(localStorage.getItem(KEY) || '[]');
-            const list = Array.isArray(raw) ? raw.slice(0, MAX_MESSAGES) : [];
-            const kept = list.filter((m) => !isLegacyDone(m));
-            let approvalMigrated = false;
-            for (const m of kept) {
-                if (migrateApprovalKind(m)) approvalMigrated = true;
-            }
-            if (kept.length !== list.length || approvalMigrated) {
-                // 顺手写回：别每次启动都重新过滤一遍（此处不能调 persist——messages 还没绑定）
-                try {
-                    localStorage.setItem(KEY, JSON.stringify(kept));
-                } catch (e) {}
-            }
-            return kept;
-        } catch (e) {
-            return [];
+        const raw = kvGetJson(KEY, []);
+        const list = Array.isArray(raw) ? raw.slice(0, MAX_MESSAGES) : [];
+        const kept = list.filter((m) => !isLegacyDone(m));
+        let approvalMigrated = false;
+        for (const m of kept) {
+            if (migrateApprovalKind(m)) approvalMigrated = true;
         }
+        if (kept.length !== list.length || approvalMigrated) {
+            // 顺手写回：别每次启动都重新过滤一遍（此处不能调 persist——messages 还没绑定）
+            kvSetJson(KEY, kept);
+        }
+        return kept;
     }
 
     function persist() {
-        try {
-            localStorage.setItem(KEY, JSON.stringify(messages.slice(0, MAX_MESSAGES)));
-        } catch (e) {
-            // localStorage 不可用（如隐私模式）：降级为内存态，不影响本会话使用
-        }
+        // 写不进（隐私模式 / 配额满）：降级为内存态，不影响本会话使用
+        kvSetJson(KEY, messages.slice(0, MAX_MESSAGES));
     }
 
     function btnEl() {
@@ -139,6 +131,7 @@ export function createMessageCenter(ctx) {
         refreshBadge();
     }
 
+    // 面板专用紧凑格式（旧档回 MM-DD HH:mm），与 core/humanize.relativeTime 口径不同，勿混用/勿替换。
     function relativeTime(ts) {
         const diff = Date.now() - ts;
         if (diff < 60000) return '刚刚';
@@ -275,10 +268,6 @@ export function createMessageCenter(ctx) {
         pop.remove();
         pop = null;
         placePanel = null;
-        if (dismissHandler) {
-            document.removeEventListener('pointerdown', dismissHandler, true);
-            dismissHandler = null;
-        }
     }
 
     function togglePanel(anchor) {
@@ -290,26 +279,18 @@ export function createMessageCenter(ctx) {
         panel.className = 'msg-center-pop';
         document.body.appendChild(panel);
         renderPanel(panel);
-        const rect = anchor.getBoundingClientRect();
-        placePanel = () => {
-            panel.style.left = Math.max(8, Math.min(rect.right - panel.offsetWidth, window.innerWidth - panel.offsetWidth - 8)) + 'px';
-            panel.style.top = Math.max(8, Math.min(rect.top - panel.offsetHeight - 8, window.innerHeight - panel.offsetHeight - 8)) + 'px';
-        };
+        // 定位统一走 core/popover-position（底部贴按钮、右侧对齐、视口钳制）
+        placePanel = () => placePopover(panel, anchor, {placement: 'top', align: 'right', gap: 8});
         placePanel();
         pop = panel;
         // 打开即视为已读：未读角标清零
         markAllRead();
-        // Esc 归全局弹层栈按层序退；这里只管点击面板外收起
+        // Esc 与外点关闭都归全局弹层栈：面板外点（不含锚点）自动退出本层
         stackHandle = overlayStack.open({
             id: 'msg-center-pop', kind: 'popover', el: panel,
+            closeOnOutsideClick: true, anchors: [anchor],
             onClose: () => { closePanel(); return true; },
         });
-        dismissHandler = (e) => {
-            if (e.type === 'pointerdown' && !panel.contains(e.target) && !anchor.contains(e.target)) {
-                closePanel();
-            }
-        };
-        document.addEventListener('pointerdown', dismissHandler, true);
     }
 
     function init() {

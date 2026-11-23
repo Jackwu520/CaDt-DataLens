@@ -4,6 +4,7 @@
 // 旧版单模型字段（model / maxTokens / contextWindow / …）保留为激活条目的镜像，
 // 旧版本 exe 回滚后仍能读到一份可用配置；新逻辑一律以 models[] 为准。
 import {USAGE_OAUTH_PROVIDER_IDS, USAGE_PLAN_IDS, USAGE_TEMPLATE_KEYS} from './ai-usage-templates.js';
+import {newId} from '../core/id.js';
 
 export const CONTEXT_WINDOW_MIN = 2048;
 export const CONTEXT_WINDOW_MAX = 8388608; // 8M tokens
@@ -269,7 +270,7 @@ export function configForModel(account, entry, idleTimeoutSec) {
 // prompt 缓存（见 https://opencode.ai/docs/console/go/ ）。生成一次存进会话对象，整会话复用。
 // 返回形如 datalens-<随机> 的短串；不外泄内部 session.id。
 export function newOpencodeSessionId() {
-    return 'datalens-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    return newId('datalens-', {suffixLength: 8});
 }
 
 // 把 x-opencode-session 头合进 cfg.extraHeaders：用户在账号里手填过该头时保留用户的值，

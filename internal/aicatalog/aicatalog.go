@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"datalens/internal/appdata"
 	"datalens/internal/atomfile"
 )
 
@@ -56,7 +57,7 @@ func Path() string {
 // 缓存读写单独抽出来（路径入参），测试用 t.TempDir() 隔离，不碰真实 appdata。
 func readFile(path string) (*Blob, error) {
 	if path == "" {
-		return nil, errors.New("无法定位应用数据目录")
+		return nil, appdata.ErrNoRoot
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -77,7 +78,7 @@ func readFile(path string) (*Blob, error) {
 
 func writeFile(path, text string) (*Blob, error) {
 	if path == "" {
-		return nil, errors.New("无法定位应用数据目录")
+		return nil, appdata.ErrNoRoot
 	}
 	if err := atomfile.WriteFileAtomicMode(path, []byte(text), 0o600); err != nil {
 		return nil, err

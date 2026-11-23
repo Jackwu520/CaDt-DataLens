@@ -9,6 +9,7 @@ import {createAITeamView} from './ai-team-view.js';
 import {agentTreeText} from './ai-team-model.js';
 import {normalizeWorktreeState} from './ai-worktree.js';
 import {aiClampInt, aiNowId, aiTextOf, AI_COMPACT_SYSTEM_PROMPT} from './ai-constants.js';
+import {parseJson} from '../core/json-safe.js';
 import {aiStreamRetryBudget, shouldAutoRetryStream} from './ai-stream-retry.js';
 import {AI_TOOL_DEFS, buildSpawnAgentDef} from './ai-tool-defs.js';
 import {inspectToolArguments} from './ai-tool-args.js';
@@ -62,10 +63,12 @@ export function parentSessionIdOf(agentId, liveOf, recordOf) {
     return (rec && rec.parentSessionId) || '';
 }
 
-// wait_agent 默认与最短等待时长（对齐 dsh：等的是「我自己下一步的新输入」）。
+// wait_agent 默认 / 最短 / 最长等待时长（对齐 dsh：等的是「我自己下一步的新输入」）。
 // 最短 5 秒是防呆：0 曾表示「不限时」，不建 deadline 时会永久悬挂（见 resolveWaitTimeoutSec）。
+// 最长 1800 秒（30 分钟）：给长任务留足空等余量，但仍建 deadline，不做不限时。
 export const AI_INBOX_WAIT_DEFAULT_SEC = 60;
 export const AI_INBOX_WAIT_MIN_SEC = 5;
+export const AI_INBOX_WAIT_MAX_SEC = 1800;
 
 // 子代理轮次预算：一轮 = 一次模型请求（一轮里可并行多个工具调用）。
 // 默认值可在 设置 → AI 助手 → 子代理 → 默认轮次 调整；单次派单用 spawn_agent 的 maxRounds 覆盖。
@@ -92,7 +95,7 @@ export function resolveSubAgentRounds(explicit, configured) {
 // 就会让工具调用永不返回（没有 deadline，只能等 notify 或停止）。
 export function resolveWaitTimeoutSec(value) {
     if (value === null || value === undefined || value === '') return AI_INBOX_WAIT_DEFAULT_SEC;
-    return aiClampInt(value, AI_INBOX_WAIT_MIN_SEC, 600, AI_INBOX_WAIT_DEFAULT_SEC);
+    return aiClampInt(value, AI_INBOX_WAIT_MIN_SEC, AI_INBOX_WAIT_MAX_SEC, AI_INBOX_WAIT_DEFAULT_SEC);
 }
 
 // 某子代理收件箱里「会被轮边界注入」的条数。ask 不算：它由 answerSubAsk 就地落定，不进队列。
@@ -253,7 +256,7 @@ export function subSandboxPolicy(session, fallbackRoot) {
 export function agentToolArgBrief(args) {
     let parsed = null;
     try {
-        parsed = typeof args === 'string' ? JSON.parse(args || '{}') : (args || null);
+        parsed = typeof args === 'string' ? parseJson(args, {}) : (args || null);
     } catch (e) {
         return '';
     }
@@ -403,8 +406,8 @@ export function createAISubagents(ctx) {
     const AI_SUB_LIMIT_DEFAULT = 20;
     const AI_SUB_LIMIT_MAX = 20;
     const AI_SUB_DEPTH_MAX = 20;
-    // wait_agent 的默认 / 最短时长在模块级（AI_INBOX_WAIT_DEFAULT_SEC / _MIN_SEC），
-    // 因为 resolveWaitTimeoutSec 是导出的纯函数，两者必须同一来源。
+    // wait_agent 的默认 / 最短 / 最长时长在模块级（AI_INBOX_WAIT_DEFAULT_SEC / _MIN_SEC / _MAX_SEC），
+    // 因为 resolveWaitTimeoutSec 是导出的纯函数，三者必须同一来源。
     // 主对话没有逐轮硬上限（靠 auto-compact 控体量）；子代理的轮次预算可在设置里调
     // （AI_SUB_ROUNDS_DEFAULT 是内置默认），撞顶时由强制收尾轮产出结论（见 runSubRound）。
     // AI_SUB_MESSAGES_MAX 是第二道闸门：工具调用多时可能先撞消息数而不是轮次。

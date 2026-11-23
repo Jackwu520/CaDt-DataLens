@@ -5,6 +5,7 @@
 // 浮窗 / 调试控制台窗口（__aiFloatWindow / __consoleWindowMode）不参与，避免重复检查；
 // 多窗口并发时 StorageClear 有互斥锁且缓存直删幂等，最坏重复清一次，无害。
 import {AUTO_CLEAN_LAST_KEY, autoCleanScope, clearReportText, shouldAutoClean} from './settings-pane-storage.js';
+import {kvGet, kvSet} from '../core/kv-store.js';
 
 const CHECK_DELAY_MS = 2 * 60 * 1000;
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -28,13 +29,13 @@ export function createStorageAutoClean(deps) {
     }
 
     function lastAt() {
-        const n = Number(localStorage.getItem(AUTO_CLEAN_LAST_KEY) || 0);
+        const n = Number(kvGet(AUTO_CLEAN_LAST_KEY) || 0);
         return Number.isFinite(n) && n > 0 ? n : 0;
     }
 
     function markCleaned() {
         // 先记时间再清理：并发窗口里第二个检查者看到新鲜时间戳就跳过
-        try { localStorage.setItem(AUTO_CLEAN_LAST_KEY, String(Date.now())); } catch (e) {}
+        kvSet(AUTO_CLEAN_LAST_KEY, String(Date.now()));
     }
 
     async function check() {

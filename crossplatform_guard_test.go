@@ -37,6 +37,10 @@ var windowsOnlyAPI = []struct {
 		re:   regexp.MustCompile(`"golang\.org/x/sys/windows`),
 		hint: "import 只能待在 //go:build windows 的文件里",
 	},
+	{
+		re:   regexp.MustCompile(`"explorer\.exe"`),
+		hint: "explorer.exe 只在 Windows 存在，搬进 *_windows.go（如 internal/shellexec.RevealInFolder）",
+	},
 }
 
 // crossBuildSkipDirs 不参与扫描的目录：第三方与前端，以及产物/工具目录。

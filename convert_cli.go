@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"datalens/internal/atomfile"
 	"datalens/internal/convertcli"
 )
 
@@ -53,7 +54,7 @@ func (a *App) FinishConvert(payload string) error {
 			}
 			continue
 		}
-		if err := os.WriteFile(result.Output, []byte(result.Content), 0o644); err != nil {
+		if err := atomfile.WriteFileAtomic(result.Output, []byte(result.Content)); err != nil {
 			fmt.Fprintf(os.Stderr, "写入失败 %s：%v\n", result.Output, err)
 			if firstErr == nil {
 				firstErr = err

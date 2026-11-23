@@ -4,6 +4,7 @@
 // 预检纯函数与内置主持人模板在 ai-group-model.js。
 import {createInput, createSelect, createSwitch, createTextarea} from '../core/form-controls.js';
 import {iconSvg} from '../core/icons.js';
+import {relativeTime} from '../core/humanize.js';
 import {aiNowId} from './ai-constants.js';
 import {AGENT_COLOR_HEX, agentGroups, agentsByGroup} from './ai-agent-model.js';
 import {agentsUpsert} from './ai-agent-model.js';
@@ -107,15 +108,7 @@ export function createAIGroupSidebar(deps) {
         renderGroupList(runtime.groupList());
     }
 
-    function relativeTime(ts) {
-        const value = Number(ts) || 0;
-        if (!value) return '';
-        const diff = Date.now() - value;
-        if (diff < 60000) return '刚刚';
-        if (diff < 3600000) return Math.floor(diff / 60000) + ' 分钟前';
-        if (diff < 86400000) return Math.floor(diff / 3600000) + ' 小时前';
-        return new Date(value).toLocaleDateString();
-    }
+
 
     // 运行指示：有流式发言或讨论（含暂停）时亮脉冲点
     function groupRunning(meta) {

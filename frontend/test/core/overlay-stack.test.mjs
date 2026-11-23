@@ -210,3 +210,60 @@ test('dispatchEscape：onClose 连带出栈多条后仍能继续向下消费', (
     assert.deepEqual(log, ['high', 'mid']); // low 已被连带出栈，不再被消费
     assert.equal(stack.size(), 2); // mid 消费后未自拆（无元素托管）仍在栈里，由探活兜底
 });
+
+test('dispatchOutsideClick：点在 el 内放行、点在 el 外关闭，打开当帧不判定', async () => {
+    const stack = createOverlayStack();
+    const inside = fakeEl();
+    const outside = fakeEl();
+    const panel = fakeEl();
+    panel.contains = (t) => t === inside;
+    stack.open({ id: 'pop', kind: 'popover', el: panel, closeOnOutsideClick: true, onClose: () => true });
+    // 打开当帧的 pointerdown 不关闭（pendingActivate）
+    assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: outside })), false);
+    await new Promise((r) => setTimeout(r, 0));
+    // 点在内部不关
+    assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: inside })), false);
+    assert.equal(stack.size(), 1);
+    // 点在外部关闭
+    assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: outside })), true);
+    assert.equal(stack.size(), 0);
+});
+
+test('dispatchOutsideClick：anchors 命中不关闭', async () => {
+    const stack = createOverlayStack();
+    const anchorTarget = fakeEl();
+    const anchor = { contains: (t) => t === anchorTarget };
+    const outside = fakeEl();
+    const panel = fakeEl();
+    panel.contains = () => false;
+    stack.open({ id: 'pop', kind: 'popover', el: panel, closeOnOutsideClick: true, anchors: [anchor], onClose: () => true });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: anchorTarget })), false);
+    assert.equal(stack.size(), 1);
+    assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: outside })), true);
+    assert.equal(stack.size(), 0);
+});
+
+test('dispatchOutsideClick：选择器 anchors 动态判定（锚点重渲染后仍放行）', async () => {
+    const stack = createOverlayStack();
+    const panel = fakeEl();
+    panel.contains = () => false;
+    // 用选择器字符串作 anchor
+    stack.open({ id: 'pop', kind: 'popover', el: panel, closeOnOutsideClick: true,
+        anchors: ['[data-ai-act="usage"]'], onClose: () => true });
+    await new Promise((r) => setTimeout(r, 0));
+    // 模拟重渲染后的新徽标节点：closest 命中选择器 → 放行
+    const newBadge = {closest: (sel) => (sel === '[data-ai-act="usage"]' ? {} : null)};
+    assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: newBadge })), false);
+    assert.equal(stack.size(), 1);
+    // 点别处 → 关闭
+    assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: fakeEl() })), true);
+    assert.equal(stack.size(), 0);
+});
+
+test('dispatchOutsideClick：未启用该选项的层不响应', () => {
+    const stack = createOverlayStack();
+    stack.open({ id: 'plain', kind: 'popover', onClose: () => true });
+    assert.equal(stack.dispatchOutsideClick(fakeEvent({ target: fakeEl() })), false);
+    assert.equal(stack.size(), 1);
+});

@@ -226,23 +226,19 @@ export function createAIUsageUI(ctx) {
 
         // 面板滚动 / 换会话 / 点别处 / Esc 都收起；滚轮滚动时浮层会脱锚，直接关。
         // Esc 归全局弹层栈（body 浮层，popover 档），不再自挂 keydown。
-        const onDown = (e) => {
-            if (pop.contains(e.target)) return;
-            if (e.target && e.target.closest && e.target.closest('[data-ai-act="usage"]')) return;
-            closeTurnUsagePop();
-        };
         const onScroll = () => closeTurnUsagePop();
-        document.addEventListener('mousedown', onDown, true);
         window.addEventListener('scroll', onScroll, true);
         window.addEventListener('resize', onScroll);
         turnUsageDismiss = () => {
-            document.removeEventListener('mousedown', onDown, true);
             window.removeEventListener('scroll', onScroll, true);
             window.removeEventListener('resize', onScroll);
         };
         if (turnUsageStackHandle) turnUsageStackHandle.dispose();
         turnUsageStackHandle = overlayStack.open({
             id: 'ai-turn-usage', kind: 'popover', el: pop,
+            closeOnOutsideClick: true,
+            // 选择器而非节点快照：徽标在浮层存活期间可能被重渲染（换会话/刷新），动态判定才不误关
+            anchors: ['[data-ai-act="usage"]'],
             onClose: () => { closeTurnUsagePop(); return true; },
         });
     }

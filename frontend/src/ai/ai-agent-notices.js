@@ -6,6 +6,7 @@
 //   唤醒被拒（无模型配置 / 预算超阈）→ 降级为未读卡片，内容不清空。
 // 唤醒单飞：并发通知只有第一个真正执行唤醒，后来者发现已有流即转排队（§4.4）。
 import {normalizeAppMessage} from './ai-app-message.js';
+import {newId} from '../core/id.js';
 
 // 信箱深度（未消费条数）上限：满则拒收回执——会话投递可丢，结算 / 提问只合并不丢弃（§4.12.4）。
 export const NOTICE_DEPTH_MAX = 10;
@@ -282,7 +283,7 @@ export function createAIAgentNotices(ctx) {
         if (!session) return {ok: false, reason: 'gone', woke: false};
         if (session.archivedAt) return {ok: false, reason: 'archived', woke: false};
         const item = {
-            messageId: notice.messageId || ('msg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7)),
+            messageId: notice.messageId || newId('msg-', {sep: '-', suffixLength: 5}),
             kind: String(notice.kind || 'notice'),
             label: String(notice.label || '后台通知'),
             content: String(notice.content == null ? '' : notice.content),
@@ -385,6 +386,11 @@ export function createAIAgentNotices(ctx) {
             : (current ? current.id : '');
         const ownKey = current ? workspaceKeyOf(current) : '';
         const includeAll = opts.allWorkspaces === true;
+        // 可选过滤（模型侧 session_list 的参数；UI 选择器不传这些，行为不变）：
+        // state 只认三个合法值，非法值当不过滤；多个条件同时满足才保留。
+        const wantState = ['idle', 'streaming', 'compacting'].includes(opts.state) ? opts.state : '';
+        const wantUnread = opts.unreadOnly === true;
+        const titleNeedle = opts.titleContains == null ? '' : String(opts.titleContains).toLowerCase();
         return getSessions()
             .filter((session) => session && !session.archivedAt)
             .filter((session) => !excludeId || session.id !== excludeId)
@@ -392,6 +398,9 @@ export function createAIAgentNotices(ctx) {
                 if (includeAll || !ownKey) return true;
                 return workspaceKeyOf(session) === ownKey;
             })
+            .filter((session) => !wantState || sessionStateOf(session) === wantState)
+            .filter((session) => !wantUnread || !!session.unread)
+            .filter((session) => !titleNeedle || String(session.title || '').toLowerCase().includes(titleNeedle))
             .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
             .slice(0, 50);
     }
@@ -399,7 +408,7 @@ export function createAIAgentNotices(ctx) {
     function sessionListText(options) {
         const rows = listSessionsForSend(options);
         if (!rows.length) {
-            return '当前没有可投递的其他会话（默认只列同工作区、未归档的会话；需要跨工作区时传 allWorkspaces=true）。';
+            return '没有符合条件的会话（默认只列同工作区、未归档、不含当前会话；可传 allWorkspaces=true 跨工作区，或放宽 state / unreadOnly / titleContains 过滤）。';
         }
         const lines = ['可投递的会话（最近活动倒序，最多 50 条）：'];
         for (const session of rows) {

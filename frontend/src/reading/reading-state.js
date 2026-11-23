@@ -3,6 +3,8 @@
 // storage 可注入（Node --test 用内存 mock）。
 
 import {normalizeBookKey} from './reading-model.js';
+import {newId} from '../core/id.js';
+import {parseJson} from '../core/json-safe.js';
 
 export const READING_STATE_KEY = 'datalens-reading-state';
 const STATE_VERSION = 1;
@@ -39,7 +41,7 @@ export function createReadingState(storage) {
         try {
             const raw = store.getItem(READING_STATE_KEY);
             if (!raw) return emptyState();
-            const parsed = JSON.parse(raw);
+            const parsed = parseJson(raw, null);
             if (!parsed || typeof parsed !== 'object') return emptyState();
             if (parsed.version !== STATE_VERSION) return migrate(parsed);
             if (!parsed.books || typeof parsed.books !== 'object') parsed.books = {};
@@ -139,7 +141,7 @@ export function createReadingState(storage) {
                 Math.abs((x.ratio || 0) - (entry.ratio || 0)) < 0.02);
             if (dup) return {ok: false, existing: dup};
             const bm = {
-                id: 'bm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6),
+                id: newId('bm-', {sep: '-', suffixLength: 4}),
                 unitId: entry.unitId,
                 rel: entry.rel || '',
                 title: entry.title || '',

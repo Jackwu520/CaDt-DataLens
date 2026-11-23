@@ -10,6 +10,7 @@
 // - 卡片内的链接由外层拦截后交给系统浏览器，其它导航一律阻止。
 import DOMPurify from 'dompurify';
 import {SHADOW_STYLE, VISUAL_BUDGET, WIDGET_LANGS, svgSanitizeConfig} from './visual-spec.js';
+import {escapeHtml} from './escape.js';
 // 限额与 Shadow 基础样式来自 core/visual-spec.js（规范单一来源，代码与提示词共用一份预算）。
 const MAX_WIDGET_CHARS = VISUAL_BUDGET.maxWidgetChars;
 const MAX_WIDGETS_PER_MESSAGE = VISUAL_BUDGET.maxPerMessage;
@@ -45,13 +46,9 @@ export function widgetKindOf(info) {
     return {lang, kind};
 }
 
+// 保留旧名做兼容，实现统一到 core/escape.js（同一份 5 实体转义）。
 export function escapeWidgetText(text) {
-    return String(text == null ? '' : text)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
+    return escapeHtml(text);
 }
 
 // 轻量滚动 hash：用于标记同一段代码，重渲染时可据此判断要不要重建卡片。

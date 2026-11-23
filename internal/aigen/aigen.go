@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"datalens/internal/aitransport"
+	"datalens/internal/atomfile"
 )
 
 // Version 宿主注入：应用版本，用于 User-Agent（main/app_core.go 的 appVersion）。
@@ -229,7 +230,7 @@ func SaveProducts(specJSON string) SaveResult {
 		}
 		name := fmt.Sprintf("gen-%s-%d.%s", stamp, idx+1, aiGenExtFor(productMIME, kind))
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, raw, 0o644); err != nil {
+		if err := atomfile.WriteFileAtomic(path, raw); err != nil {
 			return SaveResult{Error: "写入产物失败：" + err.Error()}
 		}
 		files = append(files, SavedFile{Path: path, Bytes: int64(len(raw)), MIME: productMIME})

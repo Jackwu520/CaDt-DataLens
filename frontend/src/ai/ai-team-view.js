@@ -1,6 +1,7 @@
 // ai-team-view.js：智能体团队详情视图（内容区标签页）——主代理 + 子代理树的纵向卡片图。
 // 纯数据在 ai-team-model.js；本模块只负责 DOM、节流刷新与卡片点击（无持久化状态）。
 import {iconSvg} from '../core/icons.js';
+import {el} from '../core/dom.js';
 import {flattenAgentTree} from './ai-agent-tree.js';
 import {
     TEAM_MAIN_KEY, makeMainAgentNode, buildTeamTree, teamAgentStats,
@@ -15,13 +16,6 @@ const MAIN_STATE = {
     compacting: {label: '压缩中', cls: 'ai-agent-waiting'},
     idle: {label: '空闲', cls: 'ai-agent-stopped'},
 };
-
-function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined) node.textContent = text;
-    return node;
-}
 
 export function createAITeamView(ctx, extras) {
     const openAgentView = extras.openAgentView;

@@ -24,19 +24,13 @@ export function createAIModelPicker(ctx) {
     const usageQuota = typeof ctx.usageQuota === 'function' ? ctx.usageQuota : null;
 
     let modelPickerEl = null;
-    let modelPickerDismiss = null;
-    // 浮层的弹层栈条目（页面级 body 浮层，popover 档）：Esc 由栈按层序退
+    // 浮层的弹层栈条目（页面级 body 浮层，popover 档）：Esc 与外点关闭都由栈处理
     let modelPickerStackHandle = null;
 
     function closeModelPicker() {
         if (modelPickerStackHandle) {
             modelPickerStackHandle.dispose();
             modelPickerStackHandle = null;
-        }
-        if (modelPickerDismiss) {
-            const dispose = modelPickerDismiss;
-            modelPickerDismiss = null;
-            dispose();
         }
         if (modelPickerEl) {
             modelPickerEl.remove();
@@ -288,16 +282,6 @@ export function createAIModelPicker(ctx) {
             // Esc 不在这里处理：浮层已进全局弹层栈，栈按层序关
         });
 
-        const onDocMouseDown = (e) => {
-            if (modelPickerEl && picker.contains(e.target)) return;
-            if (el.modelChip && el.modelChip.contains(e.target)) return;
-            closeModelPicker();
-        };
-        modelPickerDismiss = () => {
-            document.removeEventListener('mousedown', onDocMouseDown, true);
-        };
-        document.addEventListener('mousedown', onDocMouseDown, true);
-
         renderList();
         renderLimits();
         document.body.appendChild(picker);
@@ -316,6 +300,7 @@ export function createAIModelPicker(ctx) {
         if (modelPickerStackHandle) modelPickerStackHandle.dispose();
         modelPickerStackHandle = overlayStack.open({
             id: 'ai-model-picker', kind: 'popover', el: picker,
+            closeOnOutsideClick: true, anchors: [el.modelChip],
             onClose: () => { closeModelPicker(); return true; },
         });
     }

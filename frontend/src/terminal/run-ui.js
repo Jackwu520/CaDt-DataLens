@@ -226,5 +226,5 @@ async function startRunProject() {
 // 首次确认按语言 id 记录（run.js 里传 label + lang）
 runController.mount();
 
-return {activeDocText, runArgsText, runController, setRunArgs, startRunProject};
+return {activeDocText, runArgsText, runController, ensureToolchainForRun, setRunArgs, startRunProject};
 }

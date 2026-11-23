@@ -3,8 +3,9 @@
 // 请发言 / 静音 / 停止 / 打开群聊动作。挂载点由 bridge-group-member-view 提供（内容区标签页）。
 // 数据来自 runtime（subscribe + groupById / activeStreamOf / discussionSnapshot / store.privateRead）。
 import {createInput} from '../core/form-controls.js';
+import {el} from '../core/dom.js';
 import {agentCapability} from './ai-agent-model.js';
-import {STANCE_LABELS} from './ai-group-model.js';
+import {STANCE_LABELS, stripHandoffMarker} from './ai-group-model.js';
 import {parsePrivateSteps} from './ai-group-store.js';
 import {memberColorHex, memberInitial, timeLabel} from './ai-group-ui-model.js';
 
@@ -12,13 +13,6 @@ const REFRESH_THROTTLE_MS = 200;
 // 私有过程 / 发言记录最多展示的条数（更早的仍在本机日志里，不删）
 const PRIVATE_STEPS_MAX = 20;
 const SPEECH_HISTORY_MAX = 30;
-
-function el(tag, className, text) {
-    const node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
-}
 
 export function createAIGroupMemberView(deps) {
     const runtime = deps.runtime;
@@ -329,7 +323,8 @@ export function createAIGroupMemberView(deps) {
 
     function renderHistory(view, g) {
         const mine = (g.messages || []).filter((m) => m.role === 'assistant' && m.agentId === view.agentId);
-        const sig = String(g.meta.updatedAt || 0) + '|' + mine.length;
+        const isRelay = g.meta.mode === 'relay';
+        const sig = String(g.meta.updatedAt || 0) + '|' + mine.length + '|' + (isRelay ? 'r' : 'd');
         if (sig === view.historySig) return;
         view.historySig = sig;
         const card = view.historyBox;
@@ -342,7 +337,7 @@ export function createAIGroupMemberView(deps) {
             const row = el('div', 'gm-msg-row');
             const head = el('div', 'gm-msg-head');
             head.appendChild(el('span', null, timeLabel(msg.ts)));
-            if (Number(msg.round) > 0) head.appendChild(el('span', 'gc-badge', `第 ${msg.round} 轮`));
+            if (Number(msg.round) > 0) head.appendChild(el('span', 'gc-badge', `第 ${msg.round} ${isRelay ? '棒' : '轮'}`));
             if (msg.stance) head.appendChild(el('span', 'gc-badge gc-badge-stance-' + msg.stance, STANCE_LABELS[msg.stance] || msg.stance));
             if (msg.timing && msg.timing.ttftMs) head.appendChild(el('span', 'gc-badge', `首字 ${(msg.timing.ttftMs / 1000).toFixed(1)}s`));
             if (msg.usage && msg.usage.totalTokens) head.appendChild(el('span', 'gc-badge', `${msg.usage.totalTokens} tok`));
@@ -350,11 +345,13 @@ export function createAIGroupMemberView(deps) {
             if (msg.status && msg.status !== 'done') head.appendChild(el('span', 'gc-badge', msg.status === 'error' ? '失败' : msg.status));
             row.appendChild(head);
             const content = el('div', 'gm-msg-content');
+            // 接力成员的【交棒】标记只给引擎判读，发言历史同样不展示（与主群聊视图一致）
+            const bodyText = isRelay ? stripHandoffMarker(String(msg.content || '')) : String(msg.content || '');
             if (renderMarkdown) {
-                content.innerHTML = renderMarkdown(String(msg.content || ''));
+                content.innerHTML = renderMarkdown(bodyText);
                 if (enhanceAnswerBody) enhanceAnswerBody(content);
             } else {
-                content.textContent = String(msg.content || '');
+                content.textContent = bodyText;
             }
             row.appendChild(content);
             card.appendChild(row);

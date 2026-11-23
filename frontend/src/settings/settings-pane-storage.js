@@ -3,23 +3,13 @@
 // 缓存直删，数据进回收站，WebView2 相关的两项排到下次启动前执行。
 
 import {createSelect, createSwitch} from '../core/form-controls.js';
+import {formatBytes} from '../core/humanize.js';
+import {kvGet} from '../core/kv-store.js';
 
 // ---- 纯函数（测试见 settings-pane-storage.test.mjs）----
 
-// formatBytes：Go 侧 fmtSize 只到 MB，这里要能表达 1.1 GB 这种量级。
-export function formatBytes(n) {
-    const value = Number(n) || 0;
-    if (value < 1024) return value + ' B';
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    let size = value / 1024;
-    let index = 0;
-    while (size >= 1024 && index < units.length - 1) {
-        size /= 1024;
-        index += 1;
-    }
-    // 100 KB 级别没必要两位小数，GB 级别要留精度
-    return size.toFixed(size >= 100 ? 0 : 1) + ' ' + units[index];
-}
+// formatBytes 已统一到 core/humanize.js，这里 re-export 供测试与旧调用方沿用。
+export {formatBytes};
 
 // groupStorageItems：缓存段与数据段分开渲染；各自按体积从大到小，空的排最后。
 export function groupStorageItems(items) {
@@ -461,7 +451,7 @@ export function createSettingsPaneStorage(deps) {
         if (!deps.settings || deps.settings.storageAutoClean !== true) {
             return '默认关闭；开启后定期或按缓存大小自动清理可再生缓存（不含浏览器登录态）。';
         }
-        const last = Number(localStorage.getItem(AUTO_CLEAN_LAST_KEY) || 0);
+        const last = Number(kvGet(AUTO_CLEAN_LAST_KEY) || 0);
         return (last ? '上次自动清理：' + new Date(last).toLocaleString() : '尚未自动清理过') + '；检查后满足条件即自动执行。';
     }
 

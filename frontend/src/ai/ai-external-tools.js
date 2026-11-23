@@ -2,6 +2,7 @@
 // 配置真源是 Go 侧 external-tools.json（apiKey 只下发掩码）；这里负责前端归一化、
 // 「实际可用来源」的判定（provider 缺 key / mcp 绑定失效都按 off）与工具结果整形。
 import {AI_WRITE_SCOPES} from './ai-constants.js';
+import {formatBytes} from '../core/humanize.js';
 
 export const EXTERNAL_CAPABILITIES = [
     {key: 'search', label: '网页搜索', builtin: true},
@@ -124,13 +125,6 @@ export function formatAudioClock(ms) {
     const m = Math.floor(total / 60);
     const s = total % 60;
     return m + ':' + String(s).padStart(2, '0');
-}
-
-function formatBytes(bytes) {
-    const n = Number(bytes) || 0;
-    if (n < 1024) return n + ' 字节';
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-    return (n / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 export function formatOcrOutput(result) {

@@ -7,9 +7,13 @@ package shellexec
 
 import (
 	"fmt"
+	"os/exec"
+	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"datalens/internal/executil"
 )
 
 const (
@@ -57,4 +61,26 @@ func Open(path string) error {
 		return fmt.Errorf("无法用默认应用打开：%w", callErr)
 	}
 	return fmt.Errorf("无法用默认应用打开（ShellExecute 返回 %d）：%s", ret, path)
+}
+
+// RevealInFolder 在系统文件管理器里打开目录，或在其中选中文件（等价于右键「在文件夹中显示」）。
+// 路径先归一成 Windows 原生分隔符：explorer.exe 把 / 开头的段当命令行开关解析，解析失败
+// 不报错，而是静默回退打开「文档」文件夹（见 TestRevealArgsUseNativePath）。
+func RevealInFolder(path string, isDir bool) error {
+	cmd := exec.Command("explorer.exe", revealArgs(path, isDir)...)
+	executil.HideCommandWindow(cmd)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+// revealArgs 构造 explorer.exe 的参数：目录直接打开，文件走 /select, 选中。
+// filepath.Clean 把前端传来的正斜杠路径归一成 Windows 原生形式（关键，见上）。
+func revealArgs(path string, isDir bool) []string {
+	cleaned := filepath.Clean(path)
+	if isDir {
+		return []string{cleaned}
+	}
+	return []string{"/select,", cleaned}
 }

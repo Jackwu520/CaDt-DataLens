@@ -33,6 +33,9 @@
 //   点击经 setTooltipActionHandler 注册的回调分发（main.js 接线），分发后隐藏、不开热窗口；
 //   挂了 actions 自动启用 sticky（读完了才点得中链接）。
 // 动作链接只用 createElement + textContent 渲染，绝不 innerHTML——原始 HTML 不执行是硬要求。
+
+import {parseJson} from './json-safe.js';
+
 export const SHOW_DELAY_MS = 1000; // 首次悬停的「停留」窗口（对齐 macOS 的 1s；别往下调回 250 = 悬停即弹）
 export const RESHOW_DELAY_MS = 150; // 热窗口内的再次显示（Windows TTDT_RESHOW 约 initial/5）
 const WARM_WINDOW_MS = SHOW_DELAY_MS; // 上一枚气泡消失后多久内算「热」：正好一个停留窗口（同 Windows）
@@ -231,12 +234,7 @@ export function resolveScrollAction({
 // label/action 均非空才收；形状不对整段丢弃——显示链路不为坏数据中断，也不 console 噪音。
 export function parseTipActions(raw, {maxActions = 3, maxLabelLength = 24} = {}) {
     if (!raw || typeof raw !== 'string') return [];
-    let list;
-    try {
-        list = JSON.parse(raw);
-    } catch (e) {
-        return [];
-    }
+    const list = parseJson(raw, []);
     if (!Array.isArray(list)) return [];
     const out = [];
     for (const item of list) {

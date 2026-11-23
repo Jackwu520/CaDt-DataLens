@@ -136,7 +136,7 @@ func WheelPath() string {
 func EnsureWheel() (string, error) {
 	path := WheelPath()
 	if path == "" {
-		return "", errors.New("无法定位应用数据目录")
+		return "", appdata.ErrNoRoot
 	}
 	return path, writeEmbeddedWheel(path)
 }

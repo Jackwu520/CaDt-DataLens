@@ -137,7 +137,7 @@ func pluginsRootFor(mode string) (string, error) {
 	if mode == "appdata" {
 		root := appdata.Root()
 		if root == "" {
-			return "", fmt.Errorf("无法定位应用数据目录")
+			return "", appdata.ErrNoRoot
 		}
 		return filepath.Join(root, "plugins"), nil
 	}
