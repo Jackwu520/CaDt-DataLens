@@ -6,11 +6,29 @@ package main
 import (
 	"embed"
 
+	"datalens/internal/mcp"
 	"datalens/internal/mcpsamples"
 )
 
 //go:embed docs/mcp-samples/tts-sapi.ps1 docs/mcp-samples/ocr-windows.ps1 docs/mcp-samples/asr-whisper.py
 var mcpSampleFS embed.FS
+
+// MCPInstallSample 覆盖内嵌 *mcpsamples.Samples 的提升方法：释放脚本 + 写盘之后，把 mcp.json
+// 现状应用到运行态管理器。其它写盘路径（MCPWriteConfig / MCPSetServerEnabled）自带 ApplyConfig；
+// 只有示例安装绕过 Client 直接写盘，漏了这步新 server 不进 m.servers，MCPSnapshot 的惰性启动
+// 看不到它、也不发 mcp-tools-changed——表现就是「装好了列表不刷新，退出重进才出现」。
+func (a *App) MCPInstallSample(id string) (map[string]interface{}, error) {
+	result, err := a.Samples.MCPInstallSample(id)
+	if err != nil {
+		return nil, err
+	}
+	// 应用失败不回滚已写盘的配置（脚本与条目已落盘，重启仍生效），只记日志；前端安装后
+	// 的 refreshMcpConfig 兜底拉取也会再试一次。
+	if err := mcp.ApplyConfigFromDisk(a.Client); err != nil {
+		writeAppLog("warn", "MCP 示例安装后应用配置失败：%v", err)
+	}
+	return result, nil
+}
 
 func init() {
 	mcpsamples.Embedded = mcpSampleFS

@@ -104,6 +104,12 @@ test('接线护栏：app_control 拦截 MCP 动作，写操作必须走命令确
     assert.ok(panel.includes("'get_mcp_servers', 'list_mcp_samples', 'install_mcp_sample', 'set_mcp_server', 'delete_mcp_server'"));
     assert.ok(panel.includes('MCP_CONFIG_ACTIONS.includes(action)'));
     assert.ok(panel.includes('backend.MCPInstallSample(id)'), '安装内置示例必须走后端释放+合并');
+    // 安装后必须重读 mcp.json（render），不能用内存旧 config（renderAll）——否则新 server
+    // 列表不刷新，要重开页面/退出重进才出现（用户实测）。两处安装入口都要覆盖。
+    assert.ok(/MCPInstallSample\(id\);[\s\S]{0,300}mcpSettingsMod\.render\(\)/.test(panel),
+        'AI 工具安装示例后必须 render() 重读配置，不能只 renderAll()');
+    assert.ok(/refreshMcpConfig:[\s\S]{0,400}mcpSettingsMod\.render\(\)/.test(panel),
+        'refreshMcpConfig（外部工具页安装后调用）必须 render() 重读配置');
     assert.ok(panel.includes("tool: 'install_mcp_sample'"));
     assert.ok(panel.includes("tool: 'set_mcp_server'"));
     assert.ok(panel.includes("tool: 'delete_mcp_server'"));

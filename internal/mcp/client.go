@@ -44,6 +44,21 @@ func (c *Client) MCPGetConfig() (MCPConfig, error) {
 	return ReadConfig()
 }
 
+// ApplyConfigFromDisk 让运行态按 mcp.json 现状重建。给「绕过本 Client 直接写盘」的路径补应用：
+// 最典型是内置示例安装（mcpsamples.MCPInstallSample 只释放脚本 + 写盘），漏了这一步新 server
+// 不进 m.servers，MCPSnapshot 的惰性启动看不到它、也不会发 mcp-tools-changed——表现就是
+// 「装好了列表没刷新，退出重进才出现」。包级函数而非 Client 方法：不新增 Wails 绑定面。
+func ApplyConfigFromDisk(c *Client) error {
+	cfg, err := ReadConfig()
+	if err != nil {
+		return err
+	}
+	if mgr := c.manager(); mgr != nil {
+		mgr.ApplyConfig(cfg)
+	}
+	return nil
+}
+
 // MCPWriteConfig 保存配置：写入期校验拒绝坏条目 → 原子落盘 → 应用到运行态
 // （停掉的旧进程等待关闭确认后才替换，见 applyConfig）。
 func (c *Client) MCPWriteConfig(cfg MCPConfig) error {
