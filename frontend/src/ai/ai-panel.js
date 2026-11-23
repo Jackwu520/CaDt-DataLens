@@ -6660,6 +6660,8 @@ export function createAIPanel(options) {
                     : '') + '旧轮思考、过时的大文件/命令输出、过期注入块在组装请求时被剔除的量（会话里仍保留）';
             }
         }
+        // 弹层打开 / 重绘时同步压缩按钮禁用态：流可能在弹层开着时由别的会话起轮
+        syncCtxCompactButton();
     }
 
     // 上下文弹层渲染：
@@ -9896,7 +9898,9 @@ async function requestApproval(session, toolMessage, info) {
             }
             const result = await backend.MCPInstallSample(id);
             Promise.resolve(mcpMod.refresh()).catch(() => {});
-            if (mcpSettingsMod) mcpSettingsMod.renderAll();
+            // 必须走 render()（重读 mcp.json）而非 renderAll()：后者读的是模块内存里的旧 config，
+            // 装完新 server 列表不会出现，要重开页面才刷新（用户实测）。
+            if (mcpSettingsMod) mcpSettingsMod.render();
             flash('AI 已安装内置 MCP 示例「' + sample.name + '」');
             return result;
         }
@@ -12076,10 +12080,22 @@ async function requestApproval(session, toolMessage, info) {
             : '发送';
     }
 
+    // 上下文弹层的「压缩上下文」按钮：会话运行中禁用（与 startCompact 的 anyStreaming / oneShot
+    // 门禁同源）。弹层是常驻 DOM，流开始/结束（setStreamingUI）与弹层打开（paintCtxPop）都要同步，
+    // 否则开着弹层时别的会话起轮、按钮仍可点（点了也会被 startCompact 拒，但外观与交互不一致）。
+    function syncCtxCompactButton() {
+        if (!el.ctxPopCompact) return;
+        const busy = anyStreaming() || !!oneShot;
+        el.ctxPopCompact.disabled = busy;
+        if (busy) el.ctxPopCompact.dataset.tip = '请先停止当前生成，再压缩上下文';
+        else delete el.ctxPopCompact.dataset.tip;
+    }
+
     // composer 的「发送 / 停止」始终只看当前查看会话自己的流：
     // 别的会话在生成不影响这里（每个会话一条独立流），因此无需外部传入 active。
     function setStreamingUI() {
         syncStreamView();
+        syncCtxCompactButton();
         const viewing = currentSession();
         const compact = compactOf(viewing && viewing.id);
         const busy = !!stream || !!compact;
@@ -19220,7 +19236,9 @@ async function requestApproval(session, toolMessage, info) {
         getExternalToolsConfig: () => externalToolsConfig,
         refreshExternalTools: () => loadExternalToolsConfig(true),
         refreshMcpConfig: () => Promise.resolve(mcpMod.refresh()).then(() => {
-            if (mcpSettingsMod) mcpSettingsMod.renderAll();
+            // render() 含 loadConfig（重读 mcp.json）：安装示例 / 桌面配置写盘后必须走它，
+            // renderAll() 只读内存旧 config，新 server 不会出现（用户实测「要退出重进」）。
+            if (mcpSettingsMod) mcpSettingsMod.render();
         }).catch(() => {}),
         // 外部工具页（应用页面标签页）mount 时按 mcp.json 重绘 MCP 服务器组。
         // 这一组已迁出设置弹层：refreshSettings 只在设置页触发，没人调 render() 时总开关与

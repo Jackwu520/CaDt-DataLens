@@ -57,6 +57,19 @@ test('编辑器输入框必须带 dlg-input（不能只用域内 class 覆盖掉
     }
 });
 
+// 2026-11-23 用户截图：三个下拉「框中框」。enhanceSelect 的 wrap 会继承 select 的全部 class
+// （settings-select.js），若 createSelect 传了 dlg-input/ai-settings-input 输入框外观类，外层 wrap
+// 就与内层 .set-select-btn 叠成双层边框。故这三个会被增强的 select 只能带纯布局类（或不传，走默认 opt-select）。
+test('弹窗里被增强的 select 不得带输入框外观类（避免框中框）', () => {
+    const editorBody = scheduleSrc.slice(scheduleSrc.indexOf('function openScheduleEditor'), scheduleSrc.indexOf('// ---- 定时任务触发'));
+    for (const name of ['kindCtl', 'scopeCtl', 'targetCtl']) {
+        const start = editorBody.indexOf('const ' + name + ' = createSelect');
+        assert.ok(start >= 0, '应找到 ' + name + ' 的 createSelect 调用');
+        const block = editorBody.slice(start, editorBody.indexOf(');', start));
+        assert.ok(!/className/.test(block), name + ' 被 enhanceSelect 增强，不得传 className 外观类（框中框），实际：' + block.trim());
+    }
+});
+
 test('定时任务弹窗里的 select 经 enhanceSelect 增强（去掉原生菜单）', () => {
     // 弹窗挂 body（不在 .apppage-root 里），扫描器扫不到，必须打开后手动增强三个下拉。
     assert.ok(/const enhanceSelect = typeof ctx\.enhanceSelect/.test(scheduleSrc),

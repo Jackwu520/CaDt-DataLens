@@ -4,7 +4,10 @@
 // 之后（尤其流已结束、正在等审批时）就再也不跟随触底。
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {BOTTOM_SLACK, SHRINK_BURST, STRICT_BOTTOM_PX, USER_SCROLL_GRACE_MS, createScrollGesture, createShrinkBurst, nextStickState, shouldRefollowGrowth} from '../../src/ai/ai-scroll-follow.js';
+
+const css = readFileSync(new URL('../../src/style.css', import.meta.url), 'utf8');
 
 test('贴底态：底部留白变高 / scrollTop 被钳小仍保持贴底，并要求补底', () => {
     const next = nextStickState({stickBottom: true, lastTop: 900, byUser: false}, {top: 700, distance: 400});
@@ -92,6 +95,16 @@ test('内容异步长高：贴底态补底，上翻态 / 用户手势中一律�
     assert.equal(shouldRefollowGrowth(true, STRICT_BOTTOM_PX, false), false); // 本来就在底
     assert.equal(shouldRefollowGrowth(true, 0, false), false);
     assert.equal(shouldRefollowGrowth(true, undefined, false), false); // 量不到就别动
+});
+
+test('消息滚动区必须关掉原生 scroll anchoring，避免新卡片顶走用户阅读位置', () => {
+    // 贴底跟随由 ai-scroll-follow 的 JS 判定全权负责；上翻态刻意不动 scrollTop。
+    // 浏览器原生 overflow-anchor:auto 会在视口锚点上方插入/展开卡片时自动改 scrollTop，
+    // 绕过这套判定——用户正在读历史时滚动条被顶走。两个消息滚动区都要显式关掉。
+    const aiMsgs = css.slice(css.indexOf('.ai-messages {'), css.indexOf('.ai-messages > :first-child'));
+    assert.match(aiMsgs, /overflow-anchor:\s*none/, '.ai-messages 必须 overflow-anchor:none');
+    const gcScroll = css.slice(css.indexOf('.gc-scroll {'), css.indexOf('.gc-list {'));
+    assert.match(gcScroll, /overflow-anchor:\s*none/, '.gc-scroll（群聊消息区）必须 overflow-anchor:none');
 });
 
 test('连续减小兜底：单发布局钳位不算用户拖动', () => {

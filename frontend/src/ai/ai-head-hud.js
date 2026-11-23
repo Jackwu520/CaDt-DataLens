@@ -511,7 +511,12 @@ export function createAIHeadHud(ctx, extras) {
     const headTitleRow = panel.querySelector('.ai-head-title-row');
     if (headTitleRow && typeof ResizeObserver === 'function') {
         const headRO = new ResizeObserver(() => {
-            headTitleRow.classList.toggle('ai-head-compact', headTitleRow.clientWidth < 420);
+            const width = headTitleRow.clientWidth;
+            headTitleRow.classList.toggle('ai-head-compact', width < 420);
+            // 中等宽度先把「变更 N」徽标收起：它是这一排里最宽、且可折行的元素，
+            // 挤到 420–560 区间时会折成「变 / 更 N」两行（用户实测）。改动汇总在消息流
+            // 轮尾卡片里仍可见，故此处先收起它，Git / 搜索留到 .ai-head-compact 档再收。
+            headTitleRow.classList.toggle('ai-head-tight', width < 560);
         });
         headRO.observe(headTitleRow);
     }

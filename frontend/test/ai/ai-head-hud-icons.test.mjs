@@ -26,3 +26,12 @@ test('非 0 退出的行挂 failed 类，样式表用红色', () => {
     assert.match(hud, /failedExit \? 'failed' : state/);
     assert.match(css, /\.ai-status-failed \{ color: var\(--red\); \}/);
 });
+
+test('窄宽度先收「变更」徽标：中等宽度档隐藏它，徽标本身不折行', () => {
+    // 用户实测：420–560px 区间「变更 11」被挤成「变 / 更 11」两行。修法是两道：
+    // ① .ai-chip-btn 加 white-space:nowrap 永不折行；
+    // ② 中等宽度（ai-head-tight）先整块收起徽标，改动汇总在消息流轮尾卡片仍可见。
+    assert.match(css, /\.ai-chip-btn \{[^}]*white-space:\s*nowrap/s, '徽标必须禁止折行');
+    assert.match(hud, /classList\.toggle\('ai-head-tight',\s*width < 560\)/, 'ResizeObserver 必须在中等宽度加 tight 档');
+    assert.match(css, /\.ai-head-tight #ai-changes \{ display: none; \}/, 'tight 档必须收起变更徽标');
+});

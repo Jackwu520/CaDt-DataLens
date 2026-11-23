@@ -448,8 +448,10 @@ export function createAISchedule(ctx) {
         };
         // 表单控件一律走 core/form-controls.js（修复存量裸控件违规）
         const nameCtl = createInput({className: 'dlg-input ai-settings-input', placeholder: '省略则取指令前 30 字'});
+        // 会被 enhanceSelect 增强的下拉不要传 dlg-input/ai-settings-input 外观类：
+        // 增强器的 wrap 会继承 select 的 class（settings-select.js），外观类跟着套到外层
+        // 就与内层 .set-select-btn 形成「框中框」。保留工厂默认 opt-select（纯布局）即可。
         const kindCtl = createSelect({
-            className: 'dlg-input ai-settings-input',
             options: [
                 {value: 'once', label: '单次（once）'},
                 {value: 'interval', label: '固定间隔（interval）'},
@@ -465,7 +467,6 @@ export function createAISchedule(ctx) {
             placeholder: '到点注入给 AI 的指令，例如：检查构建进度并汇报',
         });
         const scopeCtl = createSelect({
-            className: 'dlg-input ai-settings-input',
             options: [
                 {value: 'chat', label: 'chat（纯对话）'},
                 {value: 'read', label: 'read（只读访问）'},
@@ -473,7 +474,7 @@ export function createAISchedule(ctx) {
             ],
         });
         // 目标会话：默认唤醒当前会话；也可选每次新建
-        const targetCtl = createSelect({className: 'dlg-input ai-settings-input'});
+        const targetCtl = createSelect({});
         const targetSel = targetCtl.control;
         const fillTargetOptions = () => {
             targetSel.textContent = '';

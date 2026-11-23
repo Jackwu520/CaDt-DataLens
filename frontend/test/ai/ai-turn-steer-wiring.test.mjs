@@ -292,6 +292,22 @@ test('formatSteerMessage：文案合同（while you were working / mid-turn）',
     assert.match(queue, /This is a mid-turn message/);
 });
 
+test('上下文弹层「压缩上下文」按钮：会话运行中禁用（与 startCompact 门禁同源）', () => {
+    const sync = sliceFunction(panel, 'function syncCtxCompactButton() {');
+    // 门禁口径与 startCompact 的 anyStreaming() / oneShot 一致
+    assert.match(sync, /anyStreaming\(\) \|\| !!oneShot/);
+    assert.match(sync, /el\.ctxPopCompact\.disabled = busy/);
+    assert.match(sync, /el\.ctxPopCompact\.dataset\.tip = '请先停止当前生成，再压缩上下文'/);
+    // 流开始/结束（setStreamingUI）与弹层打开（paintCtxPop）两处都要同步，覆盖弹层开着时别的会话起轮
+    const streaming = sliceFunction(panel, 'function setStreamingUI() {');
+    assert.match(streaming, /syncCtxCompactButton\(\)/);
+    const paint = sliceFunction(panel, 'function paintCtxPop(session, systemText) {');
+    assert.match(paint, /syncCtxCompactButton\(\)/);
+    // 视觉：禁用态压暗（.dlg-btn:disabled 只改 cursor，看不出来）
+    const css = read('../../src/style.css');
+    assert.match(css, /\.ai-ctx-compact:disabled \{ opacity: \.45; \}/);
+});
+
 test('接线：composer 拿到 preempt，队列壳导出 steer 车道与手势 API', () => {
     assert.match(panel, /preemptComposerMessage: \(\.\.\.args\) => queueMod\.preemptComposerMessage\(\.\.\.args\)/);
     const shell = makeShell();

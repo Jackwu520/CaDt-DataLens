@@ -23,6 +23,17 @@ export function createAIModelSettings(ctx, extras) {
     const askConfirm = ctx.askConfirm;
     const saveAIConfig = ctx.saveAIConfig;
     const updateComposerState = ctx.updateComposerState;
+    const renderMessages = ctx.renderMessages;
+    const isOpen = ctx.isOpen;
+    // 账号增删后重绘主区：空态「尚未配置 AI / 未配置模型」与模型 chip 都按 profileOf(session)
+    // 画在消息区里，updateComposerState 只刷发送按钮/hint，不重画主区——不调这条就会停在旧空态，
+    // 直到关掉面板重开（与 switchProfile / importAIConfig 的收尾口径一致）。
+    const refreshMainView = () => {
+        if (typeof updateComposerState === 'function') updateComposerState();
+        if (typeof ctx.renderModelChip === 'function') ctx.renderModelChip();
+        if (typeof renderMessages === 'function' && typeof isOpen === 'function' &&
+            isOpen() && ctx.currentSession && ctx.currentSession()) renderMessages(true);
+    };
     const enhanceSelect = typeof ctx.enhanceSelect === 'function' ? ctx.enhanceSelect : null;
     // 额度查询域：extras.usageQuota 是惰性 getter（管线在 ai-panel 构造）；
     // openUsageConfigDialog 由 ai-settings-dialog 注入（弹窗模块先于本模块创建）
@@ -381,7 +392,7 @@ export function createAIModelSettings(ctx, extras) {
             extras.refreshSettingsPane();
             renderProfileSelect();
             renderModelList();
-            updateComposerState();
+            refreshMainView();
             flash('模型账号已保存：' + name + '（' + entries.length + ' 个模型）');
             return;
         }
@@ -406,7 +417,7 @@ export function createAIModelSettings(ctx, extras) {
         extras.refreshSettingsPane();
         renderProfileSelect();
         renderModelList();
-        updateComposerState();
+        refreshMainView();
     }
 
     // 编辑器内的模型条目 strip（选中态 + 计数）；删除走 chip 内联 ×，账号只剩一个模型时不显示
@@ -526,7 +537,7 @@ export function createAIModelSettings(ctx, extras) {
             extras.refreshSettingsPane();
             renderProfileSelect();
             renderModelList();
-            updateComposerState();
+            refreshMainView();
             flash('已删除模型账号：' + (profile.name || '未命名'));
         }, '删除', '删除模型账号');
     }
