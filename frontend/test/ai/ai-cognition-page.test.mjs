@@ -118,11 +118,26 @@ test('页面模块硬规范：无裸原生控件、无全局 Esc 监听、抽屉
         '卷未建立时要有空态；未启用时给「去设置开启」CTA');
 });
 
+test('页面模块：205 条列表要前端分页，不能一次铺开', () => {
+    assert.ok(/const PAGE_SIZE = \d+/.test(pageSrc), '必须有前端分页常量（对齐补丁库）');
+    assert.ok(/function paintPaged\(/.test(pageSrc), '列表/搜索结果必须走统一分页渲染');
+    assert.ok(/const start = \(page - 1\) \* PAGE_SIZE/.test(pageSrc) && /\.slice\(start, start \+ PAGE_SIZE\)/.test(pageSrc),
+        '必须按页切片渲染，不能整表铺开');
+    assert.ok(/function pageFoot\(/.test(pageSrc) && /第 ' \+ page \+ '\/'/.test(pageSrc), '必须有分页页脚（共 N 条 · 第 x/y 页）');
+    assert.ok(/function repaintCurrent\(/.test(pageSrc), '翻页要能按当前视图（概览/搜索）重绘');
+    // 切换搜索 / chips / 刷新都要把页码归 1，否则翻到第 5 页后搜索显示空页
+    assert.ok(/function onSearch\(v, resetPage = true\)/.test(pageSrc) && /if \(resetPage\) page = 1/.test(pageSrc),
+        '新搜索必须归位页码，翻页重绘传 false 保留');
+    assert.ok(/chipsValue = v; page = 1/.test(pageSrc), 'chips 切换必须归位页码');
+    assert.ok(/const seq = \+\+loadSeq;\s*page = 1/.test(pageSrc), 'reload 必须归位页码');
+});
+
 test('style.css：认知页骨架与行样式就位', () => {
     assert.ok(/\.cog-root\s*\{[^}]*flex-direction:\s*column[^}]*gap:\s*\d+px/.test(cssSrc),
         '.cog-root 必须沿用 flex+gap 纵向节奏（.us-root 同款约定）');
     assert.ok(/\.cog-row\s*\{/.test(cssSrc) && /\.cog-row-path\s*\{/.test(cssSrc), '列表行与路径样式必须存在');
     assert.ok(/\.cog-field-label\s*\{/.test(cssSrc) && /\.cog-field-value\s*\{/.test(cssSrc), 'FRAS 字段块样式必须存在');
+    assert.ok(/\.cog-page-foot\s*\{/.test(cssSrc), '分页页脚样式必须存在');
 });
 
 test('dev mock：认知卷给样例条目，dev 下页面有东西可看', () => {

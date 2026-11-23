@@ -3640,6 +3640,7 @@ html.tree-guides .sb-children { border-left: 1px solid var(--border); }
 .ws-label { color: var(--text); }
 .ws-key { color: var(--muted); font-size: 13px; }
 .ws-drag { color: var(--muted); font-size: 13px; }
+.welcome-actions { display: flex; gap: 10px; }
 .wb-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .wb-item {
     display: flex;
@@ -6315,6 +6316,11 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     background: var(--chat-bg);
     user-select: text;
     scrollbar-color: var(--scroll-thumb) transparent;
+    /* 关闭浏览器原生 scroll anchoring：新消息 / 工具卡 / 任务卡在视口上方插入或展开时，
+       Chromium 会自动改 scrollTop 去「锚定」可见内容，把正在读历史的用户滚动条顶走。
+       贴底跟随已由 ai-scroll-follow 的 JS 判定全权负责（scrollToBottom / shouldRefollowGrowth），
+       上翻态刻意不动 scrollTop——原生 anchoring 会绕过这套判定，必须在这里关掉。 */
+    overflow-anchor: none;
 }
 .ai-messages > :first-child { margin-top: 10px; }
 .ai-messages > :last-child { margin-bottom: 14px; }
@@ -8450,6 +8456,8 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
 .ai-ctx-row-saved { opacity: .82; }
 .ai-ctx-row-saved b { color: #34d399; }
 .ai-ctx-compact { width: 100%; margin-top: 12px; }
+/* 会话运行中禁用压缩：只改 cursor 看不出来，压暗 + 去 hover 才明确不可点 */
+.ai-ctx-compact:disabled { opacity: .45; }
 
 /* AI 设置页 */
 .ai-settings-profile-bar { display: flex; align-items: center; gap: 6px; flex: 1; flex-wrap: wrap; }
@@ -9016,6 +9024,9 @@ body.console-only .dbg-head select { --wails-draggable: no-drag; }
     align-items: center;
     gap: 3px;
     padding: 0 6px;
+    /* 徽标永不折行：挤不下时整块收起（见 .ai-head-tight），不许折成「变 / 更 N」两行 */
+    white-space: nowrap;
+    flex: none;
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--bg);
@@ -11591,7 +11602,11 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 /* ===== 应用页面标签页（使用统计 / 外部工具 / 定时任务 / 操作记录 / 补丁库）===== */
 /* 这些页面原本嵌在设置对话框里，现在各自是一个内容区标签页：宿主给容器与滚动，
    内部骨架由各页 mount(root) 生成（结构沿用 .set-group-title / .set-card 那套）。 */
-.apppage-pane { padding: 0; overflow: auto; }
+/* 滚动与定位分层：pane 继承 .jsoneditor-pane 的 position:absolute/inset:0 当抽屉定位锚，
+   自身不滚动；内层 .apppage-scroll 承担滚动。抽屉（.ap-drawer, absolute top/bottom:0）挂到
+   pane 上即固定在可视区，不再随列表内容滚走（认知索引 / 补丁库等所有应用页面抽屉同此）。 */
+.apppage-pane { padding: 0; overflow: hidden; }
+.apppage-scroll { position: absolute; inset: 0; overflow: auto; }
 .jsoneditor-pane.active.apppage-pane { display: block; }
 /* 内边距与宽度都由宿主统一给：max-width 收住版面 + margin auto 整体居中（2026-11-22 用户反馈：
    左对齐贴边非常难看）。各页骨架 class（us-root / extcap-root）只管纵向节奏，不得自带内边距——
@@ -11747,6 +11762,8 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
     display: inline-block; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px;
     font-size: 10.5px; color: var(--muted); white-space: nowrap;
 }
+/* 认知索引分页页脚：复用补丁库 ap-patch-foot 的居中节奏，仅补一点上下间距 */
+.cog-page-foot { padding: 12px 8px; }
 .cog-detail { display: flex; flex-direction: column; gap: 8px; }
 .cog-field { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 .cog-field-label { font-size: 10.5px; color: var(--muted); margin-bottom: 3px; }
@@ -11895,6 +11912,9 @@ html[data-writing="on"][data-writing-paper="dim"] .jsoneditor textarea.jsonedito
 .ai-head-compact #ai-git,
 .ai-head-compact #ai-changes,
 .ai-head-compact #ai-head-search { display: none; }
+/* 中等宽度（420–560）：先收「变更 N」徽标——它最宽且会折成「变 / 更 N」两行。
+   改动汇总在消息流轮尾卡片里仍可见；Git / 搜索留到 .ai-head-compact 档再收。 */
+.ai-head-tight #ai-changes { display: none; }
 /* chips 弹层（复用 .ai-popover 容器） */
 #ai-chips-pop { width: 320px; }
 .ai-chips-pop-title {
@@ -14127,6 +14147,9 @@ textarea.dlg-input:focus {
     padding: 10px 12px 6px;
     scrollbar-color: var(--scroll-thumb) transparent;
     user-select: text;
+    /* 同 .ai-messages：贴底跟随由 ai-group-view 的 ai-scroll-follow JS 判定全权负责，
+       关掉原生 scroll anchoring，避免新卡片插入时把正在读历史的用户滚动条顶走。 */
+    overflow-anchor: none;
 }
 .gc-list { display: flex; flex-direction: column; gap: 10px; }
 /* 日期 / 轮次 / 事件灰条 */

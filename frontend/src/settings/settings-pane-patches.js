@@ -175,7 +175,8 @@ export function createSettingsPanePatches(deps) {
 
         const drawer = detailDrawer({title: meta.summary || '补丁详情', onClose: () => { if (openDrawer === drawer) openDrawer = null; }, content: body});
         openDrawer = drawer;
-        // 抽屉挂到当前标签的可视容器（apppage-pane），保证定位与 z-index 生效
+        // 抽屉挂到不滚动的 apppage-pane（定位锚）：absolute 抽屉固定在视口，不随内层
+        // .apppage-scroll 的列表内容滚走（认知索引同款）
         const hostPane = els.listEl && els.listEl.closest('.apppage-pane');
         (hostPane || document.body).appendChild(drawer.element);
     }

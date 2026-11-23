@@ -34,6 +34,29 @@ let groupSeq = 0;
 let dragTabId = null;
 let dragTabGroupId = null;
 let dropZone = null;
+// 标签组内拖动排序的待提交意图：dragover 时记下「插到哪个标签前/后」，drop 时消费。
+// 必须独立于落点元素保存——让位动画（.drop-gap 的 margin）会把目标标签从鼠标底下
+// 推开，drop 因此落在让位出来的 .etabs 空白区而非标签上；若只信落点元素就换不了序。
+let pendingTabDrop = null; // {gid, targetId, before}
+
+function clearTabDropGaps(strip) {
+    const root = strip || document;
+    root.querySelectorAll('.tab.drop-gap-before, .tab.drop-gap-after').forEach((t) => {
+        t.classList.remove('drop-gap-before', 'drop-gap-after');
+    });
+}
+
+// 提交组内排序：drop 落在标签或标签条空白区都走这里，消费同一份意图。
+function commitTabDrop(gid) {
+    const pending = pendingTabDrop;
+    pendingTabDrop = null;
+    const srcId = dragTabId;
+    dragTabId = null;
+    dragTabGroupId = null;
+    clearTabDropGaps();
+    if (!pending || pending.gid !== gid || !srcId || pending.targetId === srcId) return;
+    moveTabInGroup(gid, srcId, pending.targetId, pending.before);
+}
 const SPLIT_MAX_DEPTH = 3;
 const SPLIT_MIN_W = 240;
 const SPLIT_MIN_H = 180;
@@ -543,6 +566,20 @@ function buildGroup(parent, gid) {
     wrap.dataset.gid = gid;
     const strip = document.createElement('div');
     strip.className = 'etabs';
+    // 组内拖动排序兜底：让位动画会把目标标签从鼠标底下滑开，drop 常落在让位出来的
+    // .etabs 空白区。这里在标签条层 preventDefault 让 drop 生效，并提交 dragover 时
+    // 已记录的意图（dragTabId 非空 = 本组标签在拖，避免接住外部文件拖放）。
+    strip.addEventListener('dragover', (e) => {
+        if (dragTabId === null || dragTabGroupId !== gid) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+    });
+    strip.addEventListener('drop', (e) => {
+        if (dragTabId === null || dragTabGroupId !== gid) return;
+        e.preventDefault();
+        e.stopPropagation();
+        commitTabDrop(gid);
+    });
     const single = editorGroups.length === 1 && !splitRoot;
     const hide = !g || !g.docIds.length || (deps.settings.openMode === 'window' && g.docIds.length === 1 && single);
     if (hide) strip.classList.add('hidden');
@@ -847,14 +884,10 @@ function buildGroupTab(g, doc, strip) {
     });
     // 拖动：组内排序 + 跨区拖出分栏
     tab.draggable = true;
-    const clearDropGaps = () => {
-        strip.querySelectorAll('.tab.drop-gap-before, .tab.drop-gap-after').forEach((t) => {
-            t.classList.remove('drop-gap-before', 'drop-gap-after');
-        });
-    };
     tab.addEventListener('dragstart', (e) => {
         dragTabId = doc.id;
         dragTabGroupId = g.id;
+        pendingTabDrop = null;
         tab.classList.add('dragging');
         e.dataTransfer.effectAllowed = 'move';
         try { e.dataTransfer.setData('text/plain', String(doc.id)); } catch (err) {}
@@ -862,11 +895,14 @@ function buildGroupTab(g, doc, strip) {
     tab.addEventListener('dragend', () => {
         dragTabId = null;
         dragTabGroupId = null;
+        pendingTabDrop = null;
         tab.classList.remove('dragging');
-        clearDropGaps();
+        clearTabDropGaps(strip);
         hideSplitMask();
         dropZone = null;
     });
+    // dragover 只记录意图 + 画让位，不在这里决定排序：让位动画会把目标从鼠标底下滑走，
+    // 真正落点可能是让位出来的空白区；排序统一在 drop（标签或标签条兜底）时提交。
     tab.addEventListener('dragover', (e) => {
         if (dragTabId === null || dragTabGroupId !== g.id || dragTabId === doc.id) return;
         e.preventDefault();
@@ -874,7 +910,8 @@ function buildGroupTab(g, doc, strip) {
         e.dataTransfer.dropEffect = 'move';
         const r = tab.getBoundingClientRect();
         const before = e.clientX < r.x + r.width / 2;
-        clearDropGaps();
+        pendingTabDrop = {gid: g.id, targetId: doc.id, before};
+        clearTabDropGaps(strip);
         if (before) tab.classList.add('drop-gap-before');
         else {
             const next = tab.nextElementSibling;
@@ -886,13 +923,7 @@ function buildGroupTab(g, doc, strip) {
         if (dragTabId === null || dragTabGroupId !== g.id) return;
         e.preventDefault();
         e.stopPropagation();
-        const r = tab.getBoundingClientRect();
-        const before = e.clientX < r.x + r.width / 2;
-        clearDropGaps();
-        const srcId = dragTabId;
-        dragTabId = null;
-        dragTabGroupId = null;
-        moveTabInGroup(g.id, srcId, doc.id, before);
+        commitTabDrop(g.id);
     });
     return tab;
 }
@@ -1711,6 +1742,13 @@ function showWelcome() {
     deps.els.stEnc.textContent = '';
     deps.els.stEol.style.display = '';
     deps.els.stEnc.style.display = '';
+    // 关掉最后一个标签回欢迎页时，同步清掉文档相关指示项：字数 / 缩放 / 光标位置。
+    // 这三项只在有文档时更新（updateStatus / updateWordCount），漏清会把上一个文件的
+    // 「全文 4058 字」「1:1」一直挂在欢迎页状态栏上（网页标签分支已在 updateStatus 清过）。
+    deps.els.stCount.textContent = '';
+    deps.els.stCount.style.display = 'none';
+    deps.els.stZoom.textContent = '';
+    deps.els.stPos.textContent = '';
     deps.els.banner.classList.add('hidden');
     deps.closeFootPopover();
     deps.closeDialogs();

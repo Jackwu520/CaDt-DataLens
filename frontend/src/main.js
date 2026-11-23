@@ -777,6 +777,7 @@ const els = {
     welcome: document.getElementById('welcome'),
     mainPane: document.getElementById('main-pane'),
     btnWelcomeOpen: document.getElementById('btn-welcome-open'),
+    btnWelcomeFolder: document.getElementById('btn-welcome-folder'),
     stMode: document.getElementById('st-mode'),
     stSize: document.getElementById('st-size'),
     stZoom: document.getElementById('st-zoom'),
@@ -5371,6 +5372,7 @@ async function saveAll() {
 }
 
 els.btnWelcomeOpen.addEventListener('click', openDialog);
+els.btnWelcomeFolder.addEventListener('click', openFolderDialog);
 
 // 欢迎页「常用入口」：与活动栏 / 菜单共用同一批底层入口；闭包在点击时求值，
 // aiPanel / readingMode / memoApi 等此刻必已初始化，未就绪的域静默跳过

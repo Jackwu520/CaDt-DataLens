@@ -334,3 +334,100 @@ test('自适应模式：栅格比例=设备缩放比（dpr=1.25）', async () =>
         else globalThis.window = prevWindow;
     }
 });
+
+// ---- 菜单弹出前预隐藏原生控件（消除闪一帧）----
+
+test('hideBrowserBeforeMenu：可见控件先发隐藏并等完成，期间 browserMenuOpening 堵住轮询 Show', async () => {
+    const prevWindow = globalThis.window;
+    globalThis.window = {devicePixelRatio: 1};
+    try {
+        const calls = [];
+        let resolveHide;
+        const doc = {
+            id: 'b1', browser: true, browserEl: fakeEl(SURFACE), browserUrl: 'https://example.com',
+            browserApplied: {visible: true, x: 1, y: 2, w: 3, h: 4, scale: 1},
+        };
+        const backend = {
+            BrowserSetBounds: async (...a) => { calls.push(['bounds', ...a]); },
+            BrowserSetVisible: (id, v) => { calls.push(['visible', id, v]); return new Promise((r) => { resolveHide = r; }); },
+            BrowserSnapshot: async () => '',
+        };
+        const mod = moduleFor(doc, {backend});
+
+        const pending = mod.hideBrowserBeforeMenu(doc);
+        assert.equal(doc.browserMenuOpening, true, '等待期间必须堵住轮询');
+        assert.deepEqual(calls[0], ['visible', 'b1', false], '立即发隐藏请求');
+        assert.equal(doc.browserApplied, null, '作废可见缓存，避免状态卡死');
+
+        // 等待期间轮询进来：browserMenuOpening 让它按不可见处理，不会 Show
+        mod.syncBrowserTab(doc);
+        await nextTick();
+        assert.equal(calls.some((c) => c[0] === 'bounds'), false, '菜单弹出前不得重新摆位/显示控件');
+
+        resolveHide();
+        await pending;
+        mod.afterBrowserMenuOpen(doc);
+        assert.equal(doc.browserMenuOpening, false, '菜单进 DOM 后放行');
+        await nextTick(); // 等 afterBrowserMenuOpen 触发的 syncBrowserTab 异步回调跑完
+    } finally {
+        if (prevWindow === undefined) delete globalThis.window;
+        else globalThis.window = prevWindow;
+    }
+});
+
+test('hideBrowserBeforeMenu：控件已隐藏时不重复发隐藏请求', async () => {
+    const calls = [];
+    const doc = {
+        id: 'b1', browser: true, browserEl: fakeEl(SURFACE), browserUrl: 'https://example.com',
+        browserApplied: {visible: false},
+    };
+    const backend = {
+        BrowserSetVisible: (id, v) => { calls.push(['visible', id, v]); return Promise.resolve(); },
+    };
+    const mod = moduleFor(doc, {backend});
+    await mod.hideBrowserBeforeMenu(doc);
+    assert.equal(calls.length, 0, '已隐藏就不必再跨进程调用');
+    assert.equal(doc.browserMenuOpening, true);
+});
+
+test('createBrowserView：工具栏按钮写入 data-tip（全局 tooltip，非原生 title）', async () => {
+    const prevDocument = globalThis.document;
+    const prevWindow = globalThis.window;
+    try {
+        const mkEl = () => ({
+            className: '', dataset: {}, style: {}, children: [],
+            classList: {add() {}, remove() {}, toggle() {}},
+            appendChild(n) { this.children.push(n); n.parentNode = this; return n; },
+            append(...ns) { for (const n of ns) { this.children.push(n); n.parentNode = this; } },
+            addEventListener() {},
+            getBoundingClientRect: () => rect(0, 0, 800, 600),
+            getClientRects: () => [rect(0, 0, 800, 600)],
+            isConnected: true,
+        });
+        globalThis.document = {
+            createElement: mkEl,
+            getElementById: () => ({style: {display: 'none'}}),
+            querySelectorAll: () => [],
+            elementsFromPoint: () => [],
+        };
+        globalThis.window = {devicePixelRatio: 1};
+        const doc = {id: 'b1', browser: true, browserUrl: 'about:blank', browserViewport: {mode: 'fit'}};
+        const backend = {
+            BrowserSetBounds: async () => {},
+            BrowserSetVisible: async () => {},
+            BrowserSnapshot: async () => '',
+        };
+        const mod = moduleFor(doc, {backend});
+        mod.createBrowserView(doc);
+        await nextTick(); // 等末尾 syncBrowserTab 的异步回调跑完，别在测试结束后访问桩
+        // 后退/前进走 mkBtn 的 title → data-tip；视口按钮单独写，也一并核对
+        assert.equal(doc.browserBackBtn.dataset.tip, '后退');
+        assert.equal(doc.browserFwdBtn.dataset.tip, '前进');
+        assert.equal(doc.browserViewportBtn.dataset.tip.startsWith('视口尺寸：'), true);
+    } finally {
+        if (prevDocument === undefined) delete globalThis.document;
+        else globalThis.document = prevDocument;
+        if (prevWindow === undefined) delete globalThis.window;
+        else globalThis.window = prevWindow;
+    }
+});

@@ -163,6 +163,7 @@ const grid = createDbGrid({
 });
 const statusBar = document.createElement('div');
 statusBar.className = 'db-table-status';
+const statusText = document.createElement('span'); // 状态文本（与档位下拉分开，避免重建清掉增强包装层）
 const gridHost = document.createElement('div');
 gridHost.className = 'db-table-grid-host';
 gridHost.appendChild(grid.el);
@@ -268,13 +269,18 @@ function renderStatus() {
     }
     const hint = editableReason();
     if (hint) parts.push(hint);
-    // 只保留文本部分；分页档位控件单独 append（textContent 会清掉子节点）
-    statusBar.textContent = '';
-    const text = document.createElement('span');
-    text.textContent = parts.join(' · ');
-    statusBar.appendChild(text);
-    statusBar.appendChild(rowHeightSel.element);
-    statusBar.appendChild(pageSizeSel.element);
+    // 只更新文本 span，不清空整个 statusBar——两个档位下拉经 enhanceSelect 增强后，
+    // 包装层（.set-select）是 select 的兄弟节点，textContent='' 会把它一起清掉。
+    statusText.textContent = parts.join(' · ');
+    if (!statusBar.firstChild) {
+        statusBar.append(statusText, rowHeightSel.element, pageSizeSel.element);
+        // 入 DOM 后增强（enhanceSelect 的 sel.after(wrap) 要求 select 已在 DOM 里）；
+        // 幂等，重复挂载只会同步触发器文本。原生 select 仍是值真源，change 照常派发。
+        if (typeof deps.enhanceSelect === 'function') {
+            deps.enhanceSelect(rowHeightSel.control);
+            deps.enhanceSelect(pageSizeSel.control);
+        }
+    }
 }
 
 // 行高档位（图9：紧凑/常规/宽松）——网格 setRowHeight 联动 canvas 与可视窗口

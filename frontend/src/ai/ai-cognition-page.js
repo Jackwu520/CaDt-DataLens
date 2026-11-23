@@ -26,6 +26,8 @@ export function createAICognitionPage(deps) {
     let loadSeq = 0;
     let searchSeq = 0;
     let detailSeq = 0;
+    let page = 1;                 // 当前页（列表与搜索结果共用，切换筛选/搜索时归 1）
+    const PAGE_SIZE = 30;         // 与补丁库同款前端分页，避免 205 条一次铺开
 
     function alive() { return !!(hostEl && hostEl.isConnected); }
     function workspace() { return String((deps.getWorkspace && deps.getWorkspace()) || ''); }
@@ -135,28 +137,54 @@ export function createAICognitionPage(deps) {
 
     // ---- 列表 ----
 
+    // 分页页脚：共 N 条 · 第 x/y 页 + 上一页/下一页（与补丁库 ap-patch-foot 同款）。
+    // 复用 ui-kit 的 iconButton，图标走 core/icons.js 注册表。
+    function pageFoot(total, totalPages) {
+        const foot = document.createElement('div');
+        foot.className = 'ap-patch-foot cog-page-foot';
+        foot.textContent = '共 ' + total + ' 条 · 第 ' + page + '/' + totalPages + ' 页';
+        const prev = iconButton({icon: 'chevron-left', tip: '上一页', onClick: () => {
+            if (page > 1) { page--; repaintCurrent(); }
+        }});
+        const next = iconButton({icon: 'chevron-right', tip: '下一页', onClick: () => {
+            if (page < totalPages) { page++; repaintCurrent(); }
+        }});
+        foot.append(prev, next);
+        return foot;
+    }
+
+    // 统一分页渲染：切片 + 行 + 页脚。previewOf 由调用方给（概览无预览，搜索带 FRAS 首行）。
+    function paintPaged(items, previewOf) {
+        if (!items.length) return false;
+        const totalPages = Math.ceil(items.length / PAGE_SIZE);
+        if (page > totalPages) page = totalPages;
+        const start = (page - 1) * PAGE_SIZE;
+        const rows = items.slice(start, start + PAGE_SIZE);
+        paintList(null);
+        for (const item of rows) listEl.appendChild(rowEl(item, previewOf ? previewOf(item) : ''));
+        if (totalPages > 1) listEl.appendChild(pageFoot(items.length, totalPages));
+        return true;
+    }
+
+    // 翻页时按当前视图重绘：搜索态重放关键词（保留页码），概览态直接渲染快照。
+    function repaintCurrent() {
+        if (lastSearch) onSearch(lastSearch, false);
+        else renderList();
+    }
+
     function renderList() {
         if (!alive() || !listEl) return;
         const lines = snapshot && snapshot.exists ? applyChips(snapshot.lines || []) : [];
-        if (!lines.length) {
+        if (!paintPaged(lines, null)) {
             paintList(stateBlock('empty', chipsValue === 'all' ? '没有条目' : '没有符合条件的条目'));
-            return;
         }
-        paintList(null);
-        for (const line of lines) listEl.appendChild(rowEl(line));
     }
 
     function renderHits(res) {
         if (!alive() || !listEl) return;
         const hits = applyChips(res.hitEntries || []);
-        if (!hits.length) {
+        if (!paintPaged(hits, (hit) => String(hit.f || hit.r || hit.a || hit.s || ''))) {
             paintList(stateBlock('empty', '没有匹配的条目'));
-            return;
-        }
-        paintList(null);
-        for (const hit of hits) {
-            const preview = String(hit.f || hit.r || hit.a || hit.s || '');
-            listEl.appendChild(rowEl(hit, preview));
         }
         // 截断由后端决定：hitEntries 数 < hitCount 才是「后端收窄」；chips 本地过滤不算截断
         const fetched = Array.isArray(res.hitEntries) ? res.hitEntries.length : 0;
@@ -251,15 +279,17 @@ export function createAICognitionPage(deps) {
             content: body,
         });
         openDrawer = drawer;
-        // 抽屉挂到当前标签的可视容器（apppage-pane），保证定位与 z-index 生效（补丁库先例）
+        // 抽屉挂到不滚动的 apppage-pane（定位锚）：absolute 抽屉固定在视口，不随内层
+        // .apppage-scroll 的列表内容滚走（认知索引 / 补丁库同款）
         const hostPane = hostEl && hostEl.closest('.apppage-pane');
         (hostPane || document.body).appendChild(drawer.element);
     }
 
     // ---- 搜索（FRAS 关键词走后端 query；空词回落 overview 本地过滤） ----
 
-    function onSearch(v) {
+    function onSearch(v, resetPage = true) {
         lastSearch = v;
+        if (resetPage) page = 1;
         const ws = workspace();
         if (!v || !snapshot || !snapshot.exists || !ws || !readSupported()) {
             searchSeq++;
@@ -281,6 +311,7 @@ export function createAICognitionPage(deps) {
 
     async function reload() {
         const seq = ++loadSeq;
+        page = 1;
         const ws = workspace();
         if (!ws) {
             snapshot = null;
@@ -338,7 +369,7 @@ export function createAICognitionPage(deps) {
                 {value: 'dir', label: '目录'},
             ],
             value: chipsValue,
-            onChange: (v) => { chipsValue = v; lastSearch ? onSearch(lastSearch) : renderList(); },
+            onChange: (v) => { chipsValue = v; page = 1; lastSearch ? onSearch(lastSearch) : renderList(); },
         });
         bar = commandBar({
             placeholder: '搜索路径、标签或职责 / 关联 / 契约 / 约束关键词',

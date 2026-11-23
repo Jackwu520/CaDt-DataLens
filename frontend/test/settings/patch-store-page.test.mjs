@@ -42,3 +42,15 @@ test('补丁库应用页：时间含相对时间 + 去掉嵌套滚动', () => {
     assert.ok(patchListRule, '必须有 .patch-store-list 样式');
     assert.ok(!/max-height/.test(patchListRule[0]), '去掉列表固定 max-height（避免嵌套滚动）');
 });
+
+test('应用页面抽屉定位：pane 不滚动当定位锚，抽屉挂 pane 不随列表滚走', () => {
+    const css = read('src/style.css');
+    const bridgeSrc = read('src/bridge/bridge-app-page-view.js');
+    const paneRule = /\.apppage-pane\s*\{[^}]*\}/.exec(css);
+    assert.ok(paneRule, '必须有 .apppage-pane 样式');
+    assert.ok(/overflow:\s*hidden/.test(paneRule[0]),
+        '.apppage-pane 不得滚动（否则 absolute 抽屉会随内容滚走），滚动交给内层 .apppage-scroll');
+    assert.ok(/\.apppage-scroll\s*\{[^}]*overflow:\s*auto/.test(css), '必须有内层 .apppage-scroll 承担滚动');
+    assert.ok(/apppage-scroll/.test(bridgeSrc), 'bridge 应用页面视图必须建 .apppage-scroll 滚动层');
+    assert.ok(/closest\('\.apppage-pane'\)/.test(paneSrc), '补丁详情抽屉必须挂到不滚动的 pane 定位锚');
+});

@@ -47,11 +47,42 @@ function openBrowserExternally(doc) {
     else window.open(url, '_blank', 'noopener');
 }
 
-function showBrowserMoreMenu(doc, anchor) {
+// 菜单弹出前先把原生控件藏起来并**等它真正隐藏**，再显示菜单：WebView2 是独立
+// HWND，恒盖在主 WebView 之上——在它隐藏前，菜单和定格帧这些 DOM 都盖不住它。
+// 旧逻辑先显示菜单、再靠 syncBrowserTab 的 setTimeout(0) 异步隐藏，中间隔了一帧，
+// 用户看到菜单被网页盖一下再露出来，即「闪一帧」（更多操作 / 自适应视口菜单皆然）。
+// 跨进程隐藏有上限，超时后照常弹菜单，绝不让它卡住。
+const BROWSER_MENU_HIDE_TIMEOUT = 150;
+function hideBrowserBeforeMenu(doc) {
+    if (!doc.browser || !deps.backend.BrowserSetVisible) return Promise.resolve();
+    // 等待隐藏期间菜单还没进 DOM，轮询的 syncBrowserTab 会误判「可见」把控件重新
+    // Show 出来——用 doc 标志堵住这个窗口，菜单进 DOM 后再放行。
+    doc.browserMenuOpening = true;
+    const shot = doc.browserSnapshot;
+    if (shot && shot.url === (doc.browserUrl || '')) showBrowserSnapshot(doc, shot.src);
+    if (!doc.browserApplied || !doc.browserApplied.visible) {
+        doc.browserApplied = null; // 作废缓存，让后续 syncBrowserTab 重新判定
+        return Promise.resolve();
+    }
+    doc.browserApplied = null;
+    const hide = Promise.resolve(deps.backend.BrowserSetVisible(doc.id, false)).catch(() => {});
+    // 宿主忙时不能让菜单卡住弹不出来：最多等 150ms，之后无条件放行
+    const timeout = new Promise((resolve) => setTimeout(resolve, BROWSER_MENU_HIDE_TIMEOUT));
+    return Promise.race([hide, timeout]);
+}
+
+// 菜单已进 DOM：放行同步，让它按菜单矩形重新判定可见性（相交则保持隐藏）
+function afterBrowserMenuOpen(doc) {
+    doc.browserMenuOpening = false;
+    syncBrowserTab(doc);
+}
+
+async function showBrowserMoreMenu(doc, anchor) {
     if (!deps.ctxMenu) return;
     const target = browserAddressOf(doc);
     const url = target ? browserTargetUrl(target) : '';
     const rect = anchor.getBoundingClientRect();
+    await hideBrowserBeforeMenu(doc);
     deps.ctxMenu.open([
         {label: '用默认浏览器打开', icon: 'browser', disabled: !url, action: () => openBrowserExternally(doc)},
         {label: '复制网页地址', icon: 'copy', disabled: !target, action: () => deps.copyText(target, '网页地址')},
@@ -60,9 +91,7 @@ function showBrowserMoreMenu(doc, anchor) {
         {label: '刷新页面', icon: 'refresh', action: () => deps.backend.BrowserReload(doc.id).catch(() => {})},
         {label: '停止加载', icon: 'close', disabled: !doc.loading, action: () => deps.backend.BrowserStop(doc.id).catch(() => {})},
     ], rect.left, rect.bottom + 4, {onClose: () => syncBrowserTab(doc)});
-    // 菜单已进 DOM：作废显隐缓存，让同步逻辑把原生控件先藏起来（否则菜单会被它盖住）
-    doc.browserApplied = null;
-    syncBrowserTab(doc);
+    afterBrowserMenuOpen(doc);
 }
 
 // ---------- 浏览器视口尺寸（用户菜单或 AI browser_resize 工具控制） ----------
@@ -162,7 +191,7 @@ function updateBrowserViewportBtn(doc) {
     doc.browserViewportBtn.dataset.tip = '视口尺寸：' + browserViewportLabel(doc) + '（点击切换预设或自定义）';
 }
 
-function showBrowserViewportMenu(doc, anchor) {
+async function showBrowserViewportMenu(doc, anchor) {
     if (!deps.ctxMenu) return;
     const rect = anchor.getBoundingClientRect();
     const vp = doc.browserViewport;
@@ -178,9 +207,9 @@ function showBrowserViewportMenu(doc, anchor) {
     }
     items.push({sep: true});
     items.push({label: '自定义尺寸…', action: () => showBrowserViewportDialog(doc)});
+    await hideBrowserBeforeMenu(doc);
     deps.ctxMenu.open(items, rect.left, rect.bottom + 4, {onClose: () => syncBrowserTab(doc)});
-    doc.browserApplied = null;
-    syncBrowserTab(doc);
+    afterBrowserMenuOpen(doc);
 }
 
 function showBrowserViewportDialog(doc) {
@@ -214,6 +243,9 @@ function createBrowserView(doc) {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'browser-btn';
+        // 项目统一走全局 tooltip（data-tip 驱动），别用原生 title——此前 title 参数
+        // 收了却没写上去，导致后退/前进/刷新/更多等按钮悬停都没提示。
+        if (title) b.dataset.tip = title;
         b.innerHTML = iconSvg(icon, 14);
         b.addEventListener('click', action);
         return b;
@@ -457,7 +489,9 @@ function syncBrowserTab(doc) {
         layoutFixedViewport(doc);
         const rect = browserSurfaceRect(doc);
         const cssRect = browserSurfaceCssRect(doc);
-        const visible = !!rect && browserVisibleFor(doc, cssRect);
+        // 菜单弹出等待隐藏期间：一律按「不可见」处理，绝不能把原生控件 Show 回来
+        // （否则它盖住正在弹出的菜单，就是那帧闪烁）。菜单进 DOM 后由 afterBrowserMenuOpen 放行。
+        const visible = !doc.browserMenuOpening && !!rect && browserVisibleFor(doc, cssRect);
         const last = doc.browserApplied;
         // 轮询同步会反复进来：状态没变就别再跨进程调后端
         if (!visible) {
@@ -521,6 +555,8 @@ function updateBrowserTitle(doc, title) {
         browserTargetUrl,
         browserAddressOf,
         openBrowserExternally,
+        hideBrowserBeforeMenu,
+        afterBrowserMenuOpen,
         showBrowserMoreMenu,
         setBrowserViewport,
         browserViewportLabel,

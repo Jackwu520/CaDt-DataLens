@@ -40,9 +40,14 @@ function createAppPageView(doc) {
     const pane = document.createElement('div');
     pane.className = 'jsoneditor-pane active apppage-pane';
     deps.els.editor.appendChild(pane);
+    // 滚动与定位分层：pane 不滚动，仅作抽屉（.ap-drawer，position:absolute）的定位锚；
+    // 真正滚动的是内层 .apppage-scroll。抽屉挂到 pane 上就固定在视口，不再随列表内容滚走。
+    const scroll = document.createElement('div');
+    scroll.className = 'apppage-scroll';
+    pane.appendChild(scroll);
     const root = document.createElement('div');
     root.className = 'apppage-root';
-    pane.appendChild(root);
+    scroll.appendChild(root);
     doc.pane = pane;
     doc.appPageRoot = root;
 
