@@ -125,7 +125,7 @@ func TestBrowserControlRaisedAboveMainWebView(t *testing.T) {
 	// 把遮罩压到最上，再走一次尺寸同步（真实路径：切标签/调窗口都会触发）
 	procBrowserSetWindowPos.Call(cover, browserHwndTop, 0, 0, 0, 0,
 		browserSwpNoMove|browserSwpNoSize|browserSwpNoActivate)
-	if err := app.BrowserSetBounds("t-z", 0, 0, 480, 320, 1); err != nil {
+	if err := app.BrowserSetBounds("t-z", 0, 0, 480, 320, 0, 0); err != nil {
 		t.Fatalf("BrowserSetBounds: %v", err)
 	}
 	ctlIdx := zOrderIndex(parent, inst.hwndCtl)
@@ -191,7 +191,7 @@ func TestBrowserEnsureZRaisesCoveredControl(t *testing.T) {
 	if inst == nil || inst.hwndCtl == 0 {
 		t.Fatal("未记录 WebView2 控件 HWND")
 	}
-	if err := app.BrowserSetBounds("t-ensure", 0, 0, 480, 320, 1); err != nil {
+	if err := app.BrowserSetBounds("t-ensure", 0, 0, 480, 320, 0, 0); err != nil {
 		t.Fatalf("BrowserSetBounds: %v", err)
 	}
 

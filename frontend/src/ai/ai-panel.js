@@ -11263,7 +11263,8 @@ async function requestApproval(session, toolMessage, info) {
                     ? await browserHost.applyViewport(tab.id, {mode: 'fixed', width, height})
                     : null;
                 if (!applied || !applied.applied) throw new Error('浏览器标签页不在当前窗口，无法调整视口');
-                return '浏览器视口已调整为 ' + width + '×' + height + '（固定尺寸居中显示，可通过工具条按钮恢复自适应）。';
+                return '浏览器视口已调整为 ' + width + '×' + height +
+                    '（页面按该分辨率等比缩放到标签页内，媒体查询与 innerWidth 都是该尺寸；可通过工具条按钮恢复自适应）。';
             }
             case 'browser_close': {
                 const tabId = ctx.session.browserTabId;

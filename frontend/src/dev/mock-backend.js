@@ -2672,9 +2672,10 @@ const mockBackend = {
         // 前端定格帧：dev 桩没有原生 WebView2，给一张 1×1 占位图以便走通显隐链路
         return 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
     },
-    async BrowserSetBounds(id, x, y, w, h, rasterScale) {
+    // viewportWidth/viewportHeight > 0：页面 CSS 视口（固定分辨率），0 = 自适应
+    async BrowserSetBounds(id, x, y, w, h, viewportWidth, viewportHeight) {
         if (!window.__mockBrowserBounds) window.__mockBrowserBounds = new Map();
-        window.__mockBrowserBounds.set(id, {x, y, w, h, scale: rasterScale});
+        window.__mockBrowserBounds.set(id, {x, y, w, h, viewportWidth, viewportHeight});
         if (w > 0 && h > 0) {
             if (!window.__mockBrowserVisible) window.__mockBrowserVisible = new Map();
             window.__mockBrowserVisible.set(id, true);

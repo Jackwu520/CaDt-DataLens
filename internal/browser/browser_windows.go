@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -49,6 +50,7 @@ var (
 	procBrowserSetWindowPos              = browserUser32.NewProc("SetWindowPos")
 	procBrowserGetWindow                 = browserUser32.NewProc("GetWindow")
 	procBrowserIsWindowVisible           = browserUser32.NewProc("IsWindowVisible")
+	procBrowserGetDpiForWindow           = browserUser32.NewProc("GetDpiForWindow")
 
 	browserOle32Host          = syscall.NewLazyDLL("ole32.dll")
 	procBrowserCoInitializeEx = browserOle32Host.NewProc("CoInitializeEx")
@@ -238,7 +240,6 @@ type browserInstance struct {
 	profileKey string
 	chromium   *edge.Chromium
 	controller *edge.ICoreWebView2Controller
-	ctrl3      *edge.ICoreWebView2Controller3 // 栅格缩放用（QI 一次缓存，Close 时 Release）
 	webview    *edge.ICoreWebView2
 	hwndCtl    uintptr // WebView2 控件自己的 HWND（z 序调整用）
 	ownerHWND  uintptr // 宿主父窗口（= 发起打开的窗口）：关窗时按它回收实例
@@ -248,7 +249,15 @@ type browserInstance struct {
 	canGoFwd   bool
 	loading    bool
 	visible    bool
-	raster     float64     // 当前生效的 RasterizationScale（宿主线程读写）
+	// 固定视口（与页面缩放）运行态，均只在宿主线程读写：
+	// vpWidth/vpHeight 为页面 CSS 视口，0 表示自适应；physWidth/physHeight 是最近
+	// 一次摆位的物理尺寸，导航后要按它重放缩放；zoom 是当前生效的 ZoomFactor
+	// （0 表示还没设过——页面缩放恒 > 0，用它当哨兵即可）。
+	vpWidth    int
+	vpHeight   int
+	physWidth  int
+	physHeight int
+	zoom       float64
 	dead       atomic.Bool // 内核错误后隔离：该实例不再接受操作，只等关闭
 	emit       func(event string, data interface{})
 }
@@ -458,6 +467,9 @@ func browserCreateOnHost(inst *browserInstance, hwnd uintptr) error {
 				logf("WARN", "browser-%s：页面加载失败（WebErrorStatus=%d，url=%s）", inst.id, status, inst.url)
 			}
 			browserRefreshState(inst)
+			// 导航会重置页面缩放，固定视口必须重放一次，否则新页面回到 100% 后被可视框裁掉
+			inst.zoom = 0
+			browserApplyViewportZoom(inst, inst.physWidth, inst.physHeight, inst.vpWidth, inst.vpHeight)
 		})
 	}
 	c.ProcessFailedCallback = func(sender *edge.ICoreWebView2, args *edge.ICoreWebView2ProcessFailedEventArgs) {
@@ -797,11 +809,19 @@ func (h *Host) BrowserSnapshot(id string) (string, error) {
 }
 
 // BrowserSetBounds 摆位并显示内嵌控件；x/y/w/h 为父窗口客户区物理像素。
-// rasterScale>0 时同步设置 RasterizationScale（CSS 像素 = 物理尺寸/该值）：
-// 自适应模式传设备缩放比，固定视口模式传「缩放比×适配系数」，让页面逻辑视口
-// 保持用户设定的宽高、画面等比缩进标签页区域，而不是把控件铺到区域外面
-// （2026-11-16 修复固定视口盖住其他界面）。
-func (*Host) BrowserSetBounds(id string, x int, y int, w int, h int, rasterScale float64) error {
+//
+// viewportWidth/viewportHeight > 0 时把页面的 CSS 视口固定为该逻辑尺寸，并让整页
+// 等比缩进 w×h 的可视框：分辨率（CSS 视口）与显示比例彻底分开，改分辨率页面自己
+// 触发 resize/media query，改显示比例只缩放画面（对齐 zcode 内置浏览器的做法）。
+// 传 0 表示自适应容器：缩放复位为 1，CSS 视口随控件尺寸变化。
+//
+// 实现用页面缩放（ZoomFactor）：WebView2 的 CSS 视口 = 物理宽 /(窗口 DPI 比例 ×
+// ZoomFactor)，所以 ZoomFactor = 物理宽 /(DPI 比例 × 视口宽) 恰好让逻辑视口等于
+// 用户设定的宽高，同时画面按「物理宽 / 视口宽」缩小。**不要**改用
+// RasterizationScale：它只影响栅格化密度、不参与布局（2026-11-23 实测
+// innerWidth/devicePixelRatio 完全不变），旧实现用它做缩放，所以在真机上
+// 「选了分辨率却什么都没变」。
+func (*Host) BrowserSetBounds(id string, x int, y int, w int, h int, viewportWidth int, viewportHeight int) error {
 	var taskErr error
 	jobErr := browserHostRun(func() {
 		inst := browserGet(id)
@@ -821,7 +841,7 @@ func (*Host) BrowserSetBounds(id string, x int, y int, w int, h int, rasterScale
 		}
 		bounds := edge.Rect{Left: int32(x), Top: int32(y), Right: int32(x + w), Bottom: int32(y + h)}
 		inst.chromium.ResizeWithBounds(&bounds)
-		browserApplyRasterScale(inst, rasterScale)
+		browserApplyViewportZoom(inst, w, h, viewportWidth, viewportHeight)
 		if !inst.visible {
 			_ = inst.chromium.Show()
 			inst.visible = true
@@ -834,29 +854,59 @@ func (*Host) BrowserSetBounds(id string, x int, y int, w int, h int, rasterScale
 	return taskErr
 }
 
-// browserApplyRasterScale 设置控件栅格缩放（宿主线程调用）。老 Runtime 拿不到
-// Controller3 或调用失败时只记一次日志，不影响摆位。
-func browserApplyRasterScale(inst *browserInstance, scale float64) {
-	if scale <= 0 || inst.raster == scale {
+// browserApplyViewportZoom 按固定视口重算页面缩放（宿主线程调用）。
+// vpWidth <= 0 表示自适应：缩放复位为 1，CSS 视口随控件尺寸走。
+// WebView2 的 ZoomFactor 合法区间是 0.25–5，超出会被原生侧钳制，所以这里也钳一遍，
+// 保持 inst.zoom 与真实生效值一致（否则幂等判断会一直认为「没变」）。
+func browserApplyViewportZoom(inst *browserInstance, physicalWidth int, physicalHeight int, vpWidth int, vpHeight int) {
+	if inst.controller == nil {
 		return
 	}
-	if inst.ctrl3 == nil {
-		if inst.controller == nil {
-			return
-		}
-		c3 := inst.controller.GetICoreWebView2Controller3()
-		if c3 == nil {
-			logf("WARN", "browser-%s：Runtime 不支持 RasterizationScale，固定视口按 1:1 摆位", inst.id)
-			inst.raster = scale // 记住期望值，避免每次摆位重复查询
-			return
-		}
-		inst.ctrl3 = c3
+	inst.physWidth = physicalWidth
+	inst.physHeight = physicalHeight
+	inst.vpWidth = vpWidth
+	inst.vpHeight = vpHeight
+	scale := 1.0
+	if vpWidth > 0 && vpHeight > 0 && physicalWidth > 0 && physicalHeight > 0 {
+		dpiScale := browserWindowDpiScale(inst)
+		// 宽高各算一次取小值：两个维度都不许超出设定视口，否则整页会多出一条
+		// 1px 滚动条；舍入误差只让画面差零点几像素，肉眼不可见。
+		scale = math.Min(
+			float64(physicalWidth)/(dpiScale*float64(vpWidth)),
+			float64(physicalHeight)/(dpiScale*float64(vpHeight)))
 	}
-	if err := inst.ctrl3.PutRasterizationScale(scale); err != nil {
-		logf("WARN", "browser-%s：设置栅格缩放 %.4f 失败：%v", inst.id, scale, err)
+	if scale < 0.25 {
+		scale = 0.25
+	} else if scale > 5 {
+		scale = 5
+	}
+	if inst.zoom == scale {
 		return
 	}
-	inst.raster = scale
+	if err := inst.controller.PutZoomFactor(scale); err != nil {
+		logf("WARN", "browser-%s：设置页面缩放 %.4f 失败：%v", inst.id, scale, err)
+		return
+	}
+	inst.zoom = scale
+}
+
+// browserWindowDpiScale 取控件所在窗口的 DPI 比例（96 DPI = 1）。
+// WebView2 的 CSS 像素即 DIP，视口宽 = 物理宽 /(DPI 比例 × ZoomFactor)，所以
+// 缩放公式必须带上它，否则 125%/150% 缩放的屏幕上分辨率会整体偏小一圈。
+func browserWindowDpiScale(inst *browserInstance) float64 {
+	hwnd := inst.hwndCtl
+	if hwnd == 0 {
+		hwnd = inst.ownerHWND
+	}
+	if hwnd == 0 {
+		return 1
+	}
+	dpi, _, _ := procBrowserGetDpiForWindow.Call(hwnd)
+	scale := float64(dpi) / 96
+	if scale < 0.5 || scale > 4 {
+		return 1
+	}
+	return scale
 }
 
 func (h *Host) BrowserSetVisible(id string, visible bool) error {
@@ -914,11 +964,6 @@ func (h *Host) BrowserClose(id string) error {
 		if inst.chromium != nil {
 			inst.chromium.ShuttingDown()
 			_ = inst.chromium.Hide()
-		}
-		if inst.ctrl3 != nil {
-			// GetICoreWebView2Controller3 是 QI 出来的接口指针，库只导出 AddRef，这里按 IUnknown 约定归还
-			inst.ctrl3.Vtbl.Release.Call(uintptr(unsafe.Pointer(inst.ctrl3)))
-			inst.ctrl3 = nil
 		}
 		if inst.controller != nil {
 			if err := wvControllerClose(inst.controller); err != nil {

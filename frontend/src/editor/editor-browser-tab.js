@@ -94,16 +94,32 @@ async function showBrowserMoreMenu(doc, anchor) {
     afterBrowserMenuOpen(doc);
 }
 
-// ---------- 浏览器视口尺寸（用户菜单或 AI browser_resize 工具控制） ----------
-// fit = 随标签页撑满（默认）；fixed = 固定逻辑视口，画面在区域内**等比缩放**显示
-// （DevTools 响应式模式的做法：控件摆进容器、栅格比例让页面保持设定宽高）。
-// .browser-surface 是唯一真源：ResizeObserver 会把新尺寸同步到原生 WebView2（syncBrowserTab）。
+// ---------- 浏览器视口尺寸与预览缩放（用户菜单或 AI browser_resize 工具控制） ----------
+// 分辨率与显示比例是**两件独立的事**（做法对齐 zcode 内置浏览器）：
+//   doc.browserViewport = {mode:'fit'} | {mode:'fixed', width, height}
+//       —— 页面的 CSS 视口（media query / innerWidth 看到的值）
+//   doc.browserZoom = 'fit' | 50 | 75 | 100
+//       —— 预览缩放：只改变画面大小，改不动 CSS 视口
+// 固定视口时 .browser-surface 的内联尺寸 = 视口 × 显示比例，原生控件铺在这块区域
+// 上，Go 侧按「物理宽 /(DPI 比例 × 视口宽)」设置页面缩放，页面逻辑视口因此恰好等于
+// 用户设定的宽高。旧实现让控件尺寸兼做两者（RasterizationScale 又不参与布局），
+// 结果「选了分辨率页面纹丝不动」。
+// .browser-surface 是唯一真源：ResizeObserver 会把新尺寸同步到原生 WebView2。
 
 const BROWSER_VIEWPORT_PRESETS = [
     {label: '1280 × 720（桌面）', width: 1280, height: 720},
     {label: '1440 × 900（桌面）', width: 1440, height: 900},
     {label: '375 × 812（iPhone）', width: 375, height: 812},
     {label: '768 × 1024（iPad）', width: 768, height: 1024},
+];
+
+// 预览缩放档位：100% 也需要「放得下」兜底，超过容器一律按 contain 处理
+// （原生控件没法像 <webview> 那样靠 transform 缩放，放大到超出容器会盖住界面）。
+const BROWSER_ZOOM_OPTIONS = [
+    {label: '适应窗口', value: 'fit'},
+    {label: '50%', value: 50},
+    {label: '75%', value: 75},
+    {label: '100%', value: 100},
 ];
 
 // 固定视口可用容器区域（CSS px）：.browser-view 去掉工具栏
@@ -129,15 +145,25 @@ function browserViewportFitScale(doc) {
     return Math.min(1, avail.w / vp.width, avail.h / vp.height);
 }
 
+// 实际生效的显示比例：固定档位与「放得下」取小
+function browserViewportVisualScale(doc) {
+    const fit = browserViewportFitScale(doc);
+    const zoom = doc.browserZoom;
+    if (!zoom || zoom === 'fit') return fit;
+    return Math.min(fit, Number(zoom) / 100);
+}
+
 // 按当前可用区刷新 fixed 模式的 surface 内联尺寸（窗口改变时同步重算）
 function layoutFixedViewport(doc) {
     const vp = doc.browserViewport;
     if (!doc.browserEl || !vp || vp.mode !== 'fixed' || !(vp.width > 0) || !(vp.height > 0)) return;
-    const fit = browserViewportFitScale(doc);
-    const w = Math.max(1, Math.round(vp.width * fit)) + 'px';
-    const h = Math.max(1, Math.round(vp.height * fit)) + 'px';
+    const scale = browserViewportVisualScale(doc);
+    const w = Math.max(1, Math.round(vp.width * scale)) + 'px';
+    const h = Math.max(1, Math.round(vp.height * scale)) + 'px';
     if (doc.browserEl.style.width !== w) doc.browserEl.style.width = w;
     if (doc.browserEl.style.height !== h) doc.browserEl.style.height = h;
+    // 容器尺寸变了「放得下」会重算，按钮上的比例要跟着变（否则显示的还是旧百分比）
+    updateBrowserViewportBtn(doc);
 }
 
 // 解析「宽×高」文本（支持 × x * 与逗号分隔），非法返回 null
@@ -172,23 +198,45 @@ function applyBrowserViewport(doc) {
 
 function setBrowserViewport(doc, viewport) {
     if (!doc || !doc.browserEl) return false;
-    doc.browserViewport = viewport && viewport.mode === 'fixed' && viewport.width > 0 && viewport.height > 0
+    const wasFixed = !!(doc.browserViewport && doc.browserViewport.mode === 'fixed');
+    const nextFixed = !!(viewport && viewport.mode === 'fixed' && viewport.width > 0 && viewport.height > 0);
+    doc.browserViewport = nextFixed
         ? {mode: 'fixed', width: Math.round(viewport.width), height: Math.round(viewport.height)}
         : {mode: 'fit'};
+    // 从自适应进入固定视口时重置为「适应窗口」；已在固定视口内换尺寸/换预设不动用户选的比例
+    if (nextFixed && !wasFixed) doc.browserZoom = 'fit';
     applyBrowserViewport(doc);
     return true;
+}
+
+function setBrowserZoom(doc, zoom) {
+    if (!doc || !doc.browserEl) return false;
+    const valid = BROWSER_ZOOM_OPTIONS.some((option) => option.value === zoom);
+    doc.browserZoom = valid ? zoom : 'fit';
+    applyBrowserViewport(doc);
+    return true;
+}
+
+// 显示比例文案：选了固定档位就报真实生效比例（档位被「放得下」兜底时不能报 100%，
+// 否则又是一次「选了没变化」的错觉）
+function browserViewportScaleLabel(doc) {
+    const zoom = doc.browserZoom;
+    if (!zoom || zoom === 'fit') return '适应';
+    return Math.round(browserViewportVisualScale(doc) * 100) + '%';
 }
 
 function browserViewportLabel(doc) {
     const vp = doc.browserViewport;
     if (!vp || vp.mode !== 'fixed' || !(vp.width > 0)) return '自适应';
-    return Math.round(vp.width) + '×' + Math.round(vp.height);
+    return Math.round(vp.width) + '×' + Math.round(vp.height) + ' · ' + browserViewportScaleLabel(doc);
 }
 
 function updateBrowserViewportBtn(doc) {
     if (!doc || !doc.browserViewportBtn) return;
-    doc.browserViewportBtn.textContent = browserViewportLabel(doc);
-    doc.browserViewportBtn.dataset.tip = '视口尺寸：' + browserViewportLabel(doc) + '（点击切换预设或自定义）';
+    const label = browserViewportLabel(doc);
+    if (doc.browserViewportBtn.textContent !== label) doc.browserViewportBtn.textContent = label;
+    const tip = '视口尺寸与预览缩放：' + label + '（点击切换预设、比例或自定义）';
+    if (doc.browserViewportBtn.dataset.tip !== tip) doc.browserViewportBtn.dataset.tip = tip;
 }
 
 async function showBrowserViewportMenu(doc, anchor) {
@@ -203,6 +251,17 @@ async function showBrowserViewportMenu(doc, anchor) {
             label: preset.label,
             checked: active,
             action: () => setBrowserViewport(doc, {mode: 'fixed', width: preset.width, height: preset.height}),
+        });
+    }
+    items.push({sep: true});
+    // 预览缩放与分辨率互不影响：同一分辨率下改比例只缩放画面，页面拿到的视口不变
+    for (const option of BROWSER_ZOOM_OPTIONS) {
+        const current = doc.browserZoom || 'fit';
+        items.push({
+            label: '预览缩放：' + option.label,
+            checked: !isFit && current === option.value,
+            disabled: isFit,
+            action: () => setBrowserZoom(doc, option.value),
         });
     }
     items.push({sep: true});
@@ -294,6 +353,7 @@ function createBrowserView(doc) {
     doc.browserFwdBtn = fwdBtn;
     doc.browserViewportBtn = viewportBtn;
     if (!doc.browserViewport) doc.browserViewport = {mode: 'fit'};
+    if (!doc.browserZoom) doc.browserZoom = 'fit';
     updateBrowserViewportBtn(doc);
     if (typeof ResizeObserver === 'function') {
         doc.browserRO = new ResizeObserver(() => syncBrowserTab(doc));
@@ -318,14 +378,15 @@ function browserSurfaceRect(doc) {
     const y = Math.round(rect.top * dpr);
     const physW = Math.round(rect.width * dpr);
     const physH = Math.round(rect.height * dpr);
-    // 栅格比例：自适应=设备缩放比（CSS 视口=控件物理尺寸/dpr，与页面坐标严格一致）；
-    // 固定视口=缩放后控件反推，保证页面逻辑视口宽高恰是设定的尺寸
+    // 固定视口把逻辑宽高一起交给后端：后端按「物理宽 /(DPI 比例 × 逻辑宽)」设置页面
+    // 缩放，页面 CSS 视口因此恒等于设定值（与可视框多大无关）。自适应传 0。
     const vp = doc.browserViewport;
-    let scale = dpr;
-    if (vp && vp.mode === 'fixed' && vp.width > 0 && physW > 0) {
-        scale = physW / vp.width;
-    }
-    return {x, y, w: physW, h: physH, scale};
+    const fixed = !!(vp && vp.mode === 'fixed' && vp.width > 0 && vp.height > 0);
+    return {
+        x, y, w: physW, h: physH,
+        vpW: fixed ? Math.round(vp.width) : 0,
+        vpH: fixed ? Math.round(vp.height) : 0,
+    };
 }
 
 // WebView2 是独立 HWND，永远盖在主 WebView 之上。旧逻辑只要页面里「有」浮层就隐藏
@@ -508,7 +569,8 @@ function syncBrowserTab(doc) {
             });
             return;
         }
-        if (last && last.visible && last.x === rect.x && last.y === rect.y && last.w === rect.w && last.h === rect.h && last.scale === rect.scale) {
+        if (last && last.visible && last.x === rect.x && last.y === rect.y && last.w === rect.w && last.h === rect.h &&
+            last.vpW === rect.vpW && last.vpH === rect.vpH) {
             // 状态没变就不重调 SetBounds；但主 WebView 重建/重排控件窗口会重新
             // 抢占子窗口 z 顶盖住内嵌控件（用户看是黑屏，点一下才恢复）——
             // z 序幂等自检很便宜（Go 侧一次 GetWindow 扫描，已在顶则零副作用）。
@@ -518,9 +580,9 @@ function syncBrowserTab(doc) {
                 doc.browserSnapshot.url !== (doc.browserUrl || ''));
             return;
         }
-        const applied = {visible: true, x: rect.x, y: rect.y, w: rect.w, h: rect.h, scale: rect.scale};
+        const applied = {visible: true, x: rect.x, y: rect.y, w: rect.w, h: rect.h, vpW: rect.vpW, vpH: rect.vpH};
         doc.browserApplied = applied;
-        deps.backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h, rect.scale).then(() => {
+        deps.backend.BrowserSetBounds(doc.id, rect.x, rect.y, rect.w, rect.h, rect.vpW, rect.vpH).then(() => {
             if (!deps.docs.includes(doc)) return;
             clearBrowserSnapshot(doc);      // 原生控件已 Show，撤掉定格帧
             browserSnapshotRefresh(doc, false); // 为下一次浮层备好新帧
@@ -559,6 +621,7 @@ function updateBrowserTitle(doc, title) {
         afterBrowserMenuOpen,
         showBrowserMoreMenu,
         setBrowserViewport,
+        setBrowserZoom,
         browserViewportLabel,
         createBrowserView,
         browserVisibleFor,

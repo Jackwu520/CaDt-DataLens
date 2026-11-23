@@ -66,6 +66,7 @@ func TestBrowserViewportPresetSmoke(t *testing.T) {
 		t.Fatal("实例未就绪")
 	}
 	dpr := 1.25 // 模拟 125% 缩放系统
+	// 第三列是页面 CSS 视口：0 表示自适应（视觉框给多少就是多少）
 	presets := [][2]int{{1280, 720}, {1440, 900}, {375, 812}, {768, 1024}, {0, 0}}
 
 	// 两轮预设切换：第一轮单步，第二轮带并发兜底（EnsureZ/Snapshot/Hide-Show）
@@ -76,7 +77,7 @@ func TestBrowserViewportPresetSmoke(t *testing.T) {
 			if p[0] == 0 {
 				w, h = 880, 480
 			}
-			if err := app.BrowserSetBounds("t-resize", x, y, w, h, dpr); err != nil {
+			if err := app.BrowserSetBounds("t-resize", x, y, w, h, p[0], p[1]); err != nil {
 				t.Logf("SetBounds(%dx%d): %v", p[0], p[1], err)
 			}
 			if round == 1 {
@@ -85,7 +86,7 @@ func TestBrowserViewportPresetSmoke(t *testing.T) {
 				time.Sleep(60 * time.Millisecond)
 				_ = app.BrowserSetVisible("t-resize", false)
 				time.Sleep(60 * time.Millisecond)
-				if err := app.BrowserSetBounds("t-resize", -20, y, w, h, dpr); err != nil {
+				if err := app.BrowserSetBounds("t-resize", -20, y, w, h, p[0], p[1]); err != nil {
 					t.Logf("负坐标 SetBounds(%dx%d): %v", p[0], p[1], err)
 				}
 				_ = app.BrowserSetVisible("t-resize", true)
@@ -139,7 +140,7 @@ func TestBrowserObjectMessageQuarantine(t *testing.T) {
 	if _, err := app.BrowserState("t-objmsg"); err == nil {
 		t.Fatal("隔离实例的 BrowserState 应报错")
 	}
-	if err := app.BrowserSetBounds("t-objmsg", 0, 0, 640, 480, 1); err == nil {
+	if err := app.BrowserSetBounds("t-objmsg", 0, 0, 640, 480, 0, 0); err == nil {
 		t.Fatal("隔离实例的 BrowserSetBounds 应报错")
 	}
 	if err := app.BrowserClose("t-objmsg"); err != nil {

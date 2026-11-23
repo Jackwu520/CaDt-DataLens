@@ -271,7 +271,7 @@ function fakeSurfaceIn(viewRect, toolbarH) {
     return el;
 }
 
-test('固定视口 1280×720 放进 900×564 区域：contain 缩放到 900×506，栅格比例按宽反推', async () => {
+test('固定视口 1280×720 放进 900×564 区域：contain 缩放到 900×506，逻辑视口原样上报', async () => {
     const prevDocument = globalThis.document;
     const prevWindow = globalThis.window;
     try {
@@ -290,13 +290,15 @@ test('固定视口 1280×720 放进 900×564 区域：contain 缩放到 900×506
         mod.setBrowserViewport(doc, {mode: 'fixed', width: 1280, height: 720});
         await nextTick();
         assert.equal(calls.length, 1, '切换预设后恰好一次 SetBounds');
-        const [id, x, y, w, h, scale] = calls[0];
+        const [id, x, y, w, h, vpW, vpH] = calls[0];
         assert.equal(id, 'b1');
         assert.equal(w, 900);
         assert.equal(h, 506); // round(720 * min(900/1280, 564/720))
-        assert.ok(scale > 0.703 && scale < 0.704, `scale=${scale}`);
+        assert.equal(vpW, 1280, '逻辑视口原样交给后端，由后端按缩放设页面视口');
+        assert.equal(vpH, 720);
         assert.ok(x >= 0 && y >= 36 && y + h <= 600, '控件矩形不得越出网页区域盖住工具栏/外部界面');
-        assert.equal(doc.browserApplied.scale, scale, '缩放系数纳入已应用缓存');
+        assert.equal(doc.browserApplied.vpW, 1280, '逻辑视口纳入已应用缓存');
+        assert.equal(doc.browserApplied.vpH, 720);
     } finally {
         if (prevDocument === undefined) delete globalThis.document;
         else globalThis.document = prevDocument;
@@ -305,7 +307,7 @@ test('固定视口 1280×720 放进 900×564 区域：contain 缩放到 900×506
     }
 });
 
-test('自适应模式：栅格比例=设备缩放比（dpr=1.25）', async () => {
+test('自适应模式：上报 0 视口（页面随控件尺寸走），物理尺寸按 dpr 换算', async () => {
     const prevDocument = globalThis.document;
     const prevWindow = globalThis.window;
     try {
@@ -323,10 +325,58 @@ test('自适应模式：栅格比例=设备缩放比（dpr=1.25）', async () =>
         const mod = moduleFor(doc, {backend});
         mod.setBrowserViewport(doc, {mode: 'fit'});
         await nextTick();
-        const [, , , w, h, scale] = calls[0];
+        const [, , , w, h, vpW, vpH] = calls[0];
         assert.equal(w, 1000); // 800css * 1.25
         assert.equal(h, 700);
-        assert.equal(scale, 1.25);
+        assert.equal(vpW, 0);
+        assert.equal(vpH, 0);
+    } finally {
+        if (prevDocument === undefined) delete globalThis.document;
+        else globalThis.document = prevDocument;
+        if (prevWindow === undefined) delete globalThis.window;
+        else globalThis.window = prevWindow;
+    }
+});
+
+test('预览缩放：档位只缩画面不改逻辑视口，超过「放得下」按实际比例显示', async () => {
+    const prevDocument = globalThis.document;
+    const prevWindow = globalThis.window;
+    try {
+        const calls = [];
+        globalThis.document = fakeDom({popups: []});
+        globalThis.window = {devicePixelRatio: 1};
+        const surface = fakeSurfaceIn(rect(0, 0, 900, 600), 36);
+        globalThis.document.elementsFromPoint = () => [surface];
+        const doc = {id: 'b1', browser: true, browserEl: surface, browserUrl: 'https://example.com', browserViewport: {mode: 'fit'}};
+        const backend = {
+            BrowserSetBounds: async (...args) => { calls.push(args); },
+            BrowserSetVisible: async () => {},
+            BrowserSnapshot: async () => '',
+        };
+        const mod = moduleFor(doc, {backend});
+        // 进入固定视口：默认「适应窗口」，900×506
+        mod.setBrowserViewport(doc, {mode: 'fixed', width: 1280, height: 720});
+        await nextTick();
+        assert.equal(mod.browserViewportLabel(doc), '1280×720 · 适应');
+
+        // 50%：画面减半，逻辑视口不变，按钮按真实比例显示
+        mod.setBrowserZoom(doc, 50);
+        await nextTick();
+        const last = calls[calls.length - 1];
+        assert.equal(last[3], 640, '50% 时可视宽 = 1280 × 0.5');
+        assert.equal(last[4], 360);
+        assert.equal(last[5], 1280, '缩放不改变页面逻辑视口');
+        assert.equal(mod.browserViewportLabel(doc), '1280×720 · 50%');
+
+        // 100% 超出容器：按 contain 兜底到 70%，按钮显示真实比例而不是「100%」
+        mod.setBrowserZoom(doc, 100);
+        await nextTick();
+        assert.equal(mod.browserViewportLabel(doc), '1280×720 · 70%');
+
+        // 回自适应：缩放档位不再参与显示
+        mod.setBrowserViewport(doc, {mode: 'fit'});
+        await nextTick();
+        assert.equal(mod.browserViewportLabel(doc), '自适应');
     } finally {
         if (prevDocument === undefined) delete globalThis.document;
         else globalThis.document = prevDocument;
@@ -423,7 +473,7 @@ test('createBrowserView：工具栏按钮写入 data-tip（全局 tooltip，非�
         // 后退/前进走 mkBtn 的 title → data-tip；视口按钮单独写，也一并核对
         assert.equal(doc.browserBackBtn.dataset.tip, '后退');
         assert.equal(doc.browserFwdBtn.dataset.tip, '前进');
-        assert.equal(doc.browserViewportBtn.dataset.tip.startsWith('视口尺寸：'), true);
+        assert.equal(doc.browserViewportBtn.dataset.tip.startsWith('视口尺寸与预览缩放：'), true);
     } finally {
         if (prevDocument === undefined) delete globalThis.document;
         else globalThis.document = prevDocument;
