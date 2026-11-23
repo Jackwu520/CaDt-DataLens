@@ -38,6 +38,16 @@ export function createMessageCenter(ctx) {
     };
     // toast 图标 18px（.app-toast-icon 无 svg 尺寸规则，显式尺寸保持撑满）；面板行 CSS 统一 13px 覆盖
     const kindIcon = (kind) => iconSvg(KIND_ICONS[kind] || KIND_ICONS.info, 18);
+
+    // 历史遗留：2026-11-17 之前每轮结束都记一条「AI 任务完成」（标题固定），一轮一条会把列表刷成流水账。
+    // 口径已改（完成不进消息中心，见 ai/ai-notify-policy.js），读取时把这类旧条目一次性剔掉，
+    // 免得改完之后列表里还留着上百行旧流水。只认「success + 标题完全相同」，
+    // notify_send 发的自定义标题消息（哪怕内容与完成有关）一律保留。
+    // 注意：必须定义在下面的 load() 调用之前——load 里要用它，const 存在 TDZ，
+    // 挪到 load 调用之后就变成「Cannot access before initialization」，整个模块初始化失败。
+    const LEGACY_DONE_TITLE = 'AI 任务完成';
+    const isLegacyDone = (m) => !!m && m.kind === 'success' && m.title === LEGACY_DONE_TITLE;
+
     let messages = load();
     let seq = 0;
     let pop = null;
@@ -45,13 +55,6 @@ export function createMessageCenter(ctx) {
     let stackHandle = null;
     // 浮层定位函数（内容高度变化后重新调用，保证底部始终贴住按钮）
     let placePanel = null;
-
-    // 历史遗留：2026-11-17 之前每轮结束都记一条「AI 任务完成」（标题固定），一轮一条会把列表刷成流水账。
-    // 口径已改（完成不进消息中心，见 ai/ai-notify-policy.js），读取时把这类旧条目一次性剔掉，
-    // 免得改完之后列表里还留着上百行旧流水。只认「success + 标题完全相同」，
-    // notify_send 发的自定义标题消息（哪怕内容与完成有关）一律保留。
-    const LEGACY_DONE_TITLE = 'AI 任务完成';
-    const isLegacyDone = (m) => !!m && m.kind === 'success' && m.title === LEGACY_DONE_TITLE;
 
     function load() {
         const raw = kvGetJson(KEY, []);
