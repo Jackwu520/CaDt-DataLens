@@ -4,6 +4,14 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 修复（内嵌浏览器：分辨率选择不缩放，页面纹丝不动）
+
+- **现象**：工具条选「375 × 812（iPhone）」等预设后，页面照旧按标签页宽度布局——`innerWidth`、媒体查询都没变，分辨率选项实际上只改了可视框大小，等于没选。
+- **根因（本机实测）**：旧实现靠 `ICoreWebView2Controller3::RasterizationScale` 承担缩放，而它**只影响栅格化密度、不参与布局**——960×540 可视框下把栅格比设成 1.25 / 3，页面 `innerWidth` 恒为 640（物理宽 ÷ 显示器 DPI 比例）、`devicePixelRatio` 恒为显示器比例，一次都不跟随。也试过 CDP `Emulation.setDeviceMetricsOverride`：布局能钉成 1280×720，但画面被可视框裁掉（右下角固定元素在截图里直接消失），且与页面缩放不叠加（metrics 宽再被 zoom 除一次），不能用作缩放。
+- **修法（对齐 zcode 内置浏览器：分辨率与显示比例彻底分开）**：固定视口时前端把逻辑宽高一起下传，Go 侧按 `ZoomFactor = 物理宽 ÷(窗口 DPI 比例 × 视口宽)`（宽高各算一次取小，避免 1px 滚动条）设页面缩放——页面 CSS 视口恒等于用户设定的宽高，画面按「物理宽 ÷ 视口宽」等比缩进可视框；自适应（`0`）恢复缩放 1。页面导航会重置缩放，`NavigationCompleted` 后按记住的尺寸重放（`browser_windows.go`；`browser_other.go` 桩同步签名，`RasterizationScale` 相关字段与释放逻辑一并删除）。
+- **前端新增预览缩放**：`doc.browserViewport`（分辨率）与 `doc.browserZoom`（适应窗口 / 50% / 75% / 100%）两个独立状态，改比例不动 CSS 视口；按钮显示 `1280×720 · 适应`，档位被「放得下」兜底时报**真实生效比例**（如 `· 70%`），不再出现「选了 100% 却看不出来」；从自适应进入固定视口默认「适应窗口」，换预设/换自定义尺寸不动用户已选比例（`editor-browser-tab.js`）。
+- **验证**：新增 `internal/browser/browser_viewport_windows_test.go`（`-v` 显式运行，需本机 WebView2）：960×540 框里 1280×720 视口必须报 `innerWidth/innerHeight = 1280×720` 且 `dpr < 显示器比例`，可视框减半后视口不变、`dpr` 更小，换 375×812 预设视口跟随，回自适应等于「物理宽 ÷ dpr」；`editor-browser-tab.test.mjs` 补缩放档位与真实比例文案 3 例（20 例全绿）。
+
 ### 修复（AI 头部窄宽度：「变更 N」徽标折成两行 + MCP 安装后不自动刷新）
 
 - **窄宽度徽标不再折行**：用户实测停靠面板中等宽度时头部「变更 17」被挤成「变 / 更 17」上下两行。根因是 `.ai-chip-btn` 没有 `white-space:nowrap`，而 `.ai-head-compact` 的收起阈值 420px 太晚——420–560px 区间徽标被压窄折行。修复：`style.css` 给 `.ai-chip-btn` 加 `white-space:nowrap` + `flex:none` 永不折行；`ai-head-hud.js` 的 ResizeObserver 增加 `ai-head-tight` 档（宽度 <560px 先收起「变更」徽标，改动汇总在消息流轮尾卡片仍可见），Git / 搜索留到 `ai-head-compact` 档再收。守卫补进 `ai-head-hud-icons.test.mjs`。
