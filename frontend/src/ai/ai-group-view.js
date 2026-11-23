@@ -4,7 +4,7 @@
 // 面板切换视图时 dispose（退订/清 timer/摘除文档级监听）；群讨论在 runtime 里继续跑。
 import {createInput, createTextarea} from '../core/form-controls.js';
 import {iconSvg} from '../core/icons.js';
-import {STANCE_LABELS} from './ai-group-model.js';
+import {STANCE_LABELS, stripHandoffMarker} from './ai-group-model.js';
 import {
     buildRichHtml,
     dateLabel,
@@ -278,25 +278,34 @@ export function createAIGroupView(deps) {
 
     function renderTopbar(state, g) {
         const meta = g.meta;
-        const disc = runtime.discussionSnapshot(state.groupId);
-        const running = !!(disc && disc.running);
-        const paused = !!(disc && disc.paused);
+        const isRelay = meta.mode === 'relay';
+        const run = isRelay ? runtime.relaySnapshot(state.groupId) : runtime.discussionSnapshot(state.groupId);
+        const running = !!(run && run.running);
+        const paused = !!(run && run.paused);
         const stream = runtime.activeStreamOf(state.groupId);
-        const stamp = [meta.updatedAt, meta.mode, running ? 'r' : '', paused ? 'p' : '', stream ? stream.roundId : ''].join('|');
+        const stamp = [meta.updatedAt, meta.mode, running ? 'r' : '', paused ? 'p' : '',
+            isRelay && run ? 's' + run.stage : '', stream ? stream.roundId : ''].join('|');
         if (state.topbarStamp !== stamp) {
             state.topbarStamp = stamp;
             state.chipsEl.textContent = '';
-            state.chipsEl.appendChild(el('span', 'gc-badge gc-badge-mode', meta.mode === 'task' ? '任务' : (meta.mode === 'free' ? '自由' : '圆桌')));
-            if (meta.mode !== 'free') {
+            state.chipsEl.appendChild(el('span', 'gc-badge gc-badge-mode',
+                meta.mode === 'task' ? '任务' : (isRelay ? '接力' : (meta.mode === 'free' ? '自由' : '圆桌'))));
+            if (isRelay) {
+                state.chipsEl.appendChild(el('span', 'gc-badge',
+                    run && run.stageCount
+                        ? (running || paused ? `第 ${run.stage}/${run.stageCount} 棒 · ${run.stageName}` : `共 ${run.stageCount} 棒`)
+                        : '接力链未建'));
+                state.composerCtl.control.placeholder = '描述需求，发送后自动开始接力；运行中的插话在下一棒生效';
+            } else if (meta.mode !== 'free') {
                 const round = Math.max(1, (meta.discussion && meta.discussion.round) || 1);
-                state.chipsEl.appendChild(el('span', 'gc-badge', disc && disc.unlimitedRounds ? `第 ${round} 轮 · 不限` : `第 ${round}/${meta.maxRounds} 轮`));
+                state.chipsEl.appendChild(el('span', 'gc-badge', run && run.unlimitedRounds ? `第 ${round} 轮 · 不限` : `第 ${round}/${meta.maxRounds} 轮`));
             }
             rebuildAvatars(state, meta);
-            state.boardBtn.classList.toggle('hidden', meta.mode === 'free');
+            state.boardBtn.classList.toggle('hidden', meta.mode === 'free' || isRelay);
         }
         // 状态文案每帧更新（修掉旧版 phase 早退导致「N 次发言」冻结的问题）
-        state.statusEl.textContent = groupStatusText(meta, disc);
-        const actionLabel = discussionActionLabel(meta, disc);
+        state.statusEl.textContent = groupStatusText(meta, run);
+        const actionLabel = discussionActionLabel(meta, run);
         state.actionBtn.classList.toggle('hidden', !actionLabel);
         if (actionLabel) state.actionBtn.textContent = actionLabel;
         renderTopic(state, meta);
@@ -340,6 +349,17 @@ export function createAIGroupView(deps) {
     function runDiscussionAction(state) {
         const meta = (runtime.groupById(state.groupId) || {}).meta;
         if (!meta || meta.mode === 'free') return;
+        if (meta.mode === 'relay') {
+            const run = runtime.relaySnapshot(state.groupId);
+            if (run && run.running) {
+                runtime.pauseRelay(state.groupId);
+            } else if (run && run.paused) {
+                runtime.resumeRelay(state.groupId);
+            } else {
+                runtime.startRelay(state.groupId);
+            }
+            return;
+        }
         const disc = runtime.discussionSnapshot(state.groupId);
         if (disc && disc.running) {
             runtime.pauseDiscussion(state.groupId);
@@ -411,10 +431,12 @@ export function createAIGroupView(deps) {
         const g = runtime.groupById(state.groupId);
         if (!g) return;
         const meta = g.meta;
-        const disc = runtime.discussionSnapshot(state.groupId);
+        const disc = meta.mode === 'relay' ? runtime.relaySnapshot(state.groupId) : runtime.discussionSnapshot(state.groupId);
         const items = [];
         if (meta.mode !== 'free' && disc && (disc.running || disc.paused)) {
-            items.push({label: '结束并总结', action: () => runtime.endDiscussion(state.groupId)});
+            items.push(meta.mode === 'relay'
+                ? {label: '结束并总结', action: () => runtime.endRelay(state.groupId)}
+                : {label: '结束并总结', action: () => runtime.endDiscussion(state.groupId)});
         }
         items.push({label: '压缩群聊数据', action: () => {
             flash('正在压缩群聊数据…');
@@ -489,7 +511,8 @@ export function createAIGroupView(deps) {
                 }
                 if (needsRoundBreak(prev, msg, meta)) {
                     const round = Number(msg.round) || 1;
-                    const label = meta.mode === 'free' ? '' : (discUnlimited(meta) ? `第 ${round} 轮` : `第 ${round} 轮`);
+                    const unit = meta.mode === 'relay' ? '棒' : '轮';
+                    const label = meta.mode === 'free' ? '' : `第 ${round} ${unit}`;
                     if (label) insertTimelineNode(state, el('div', 'gc-round-sep', label), msg.ts);
                 }
                 const merged = shouldMerge(prev, msg);
@@ -501,10 +524,6 @@ export function createAIGroupView(deps) {
         }
         state.msgCursor = messages.length;
         state.evtCursor = events.length;
-    }
-
-    function discUnlimited(meta) {
-        return Number(meta && meta.maxRounds) === 0;
     }
 
     function buildEmptyState(state, g) {
@@ -527,7 +546,9 @@ export function createAIGroupView(deps) {
         empty.appendChild(el('div', 'gc-empty-hint',
             meta.mode === 'free'
                 ? '发条消息开始：@点名谁谁回，@全体成员人人回'
-                : '发条消息或点「开始讨论」，@ 成员可以点名发言'));
+                : (meta.mode === 'relay'
+                    ? '发条需求开始接力：成员按链序交棒，后者可 @ 前棒回问'
+                    : '发条消息或点「开始讨论」，@ 成员可以点名发言')));
         return empty;
     }
 
@@ -582,7 +603,7 @@ export function createAIGroupView(deps) {
             if (!isUser && msg.model && !msg.chair) tips.push(msg.model);
             if (!isUser && meta.roles && meta.roles[msg.agentId]) tips.push('角色：' + meta.roles[msg.agentId]);
             if (msg.timing && msg.timing.ttftMs) tips.push(`首字 ${(msg.timing.ttftMs / 1000).toFixed(1)}s`);
-            if (Number(msg.round) > 0 && meta.mode !== 'free') tips.push(`第 ${msg.round} 轮`);
+            if (Number(msg.round) > 0 && meta.mode !== 'free') tips.push(`第 ${msg.round} ${meta.mode === 'relay' ? '棒' : '轮'}`);
             if (tips.length) nameEl.dataset.tip = tips.join(' · ');
             if (!isUser && !isMinutes) nameEl.addEventListener('click', () => openMemberOf(state, msg, meta));
             head.appendChild(nameEl);
@@ -591,13 +612,15 @@ export function createAIGroupView(deps) {
         }
 
         const bubble = el('div', 'gc-bubble' + (isUser ? ' gc-bubble-user' : '') + (isMinutes ? ' gc-bubble-minutes' : ''));
+        // 接力成员的【交棒】标记只留给引擎判读，气泡里不显示（落盘保留原样）
+        const bodyText = (isUser || isMinutes) ? String(msg.content || '') : stripHandoffMarker(String(msg.content || ''));
         if (isUser) {
-            bubble.textContent = String(msg.content || '');
+            bubble.textContent = bodyText;
         } else if (renderMarkdown) {
-            bubble.innerHTML = renderMarkdown(String(msg.content || ''));
+            bubble.innerHTML = renderMarkdown(bodyText);
             if (enhanceAnswerBody) enhanceAnswerBody(bubble);
         } else {
-            bubble.textContent = String(msg.content || '');
+            bubble.textContent = bodyText;
         }
         row.appendChild(bubble);
 

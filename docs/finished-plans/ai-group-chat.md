@@ -1109,3 +1109,27 @@ UI：成员行显示 `256K`、`1M`、`思考`、速度徽标；群创建时给�
 - 智能体透明化：成员详情标签页可并行打开，看到私有思考、上下文占用、发言记录与失败原因。
 - 维护成本下降：删除 `doc.groupChat` 虚拟文档与四处接线，群聊只有一个宿主；视图纯函数层（`ai-group-ui-model.js`）配测试。
 - 验证：前端 1423 项测试全绿 + Vite 构建 + dev mock 浏览器走查（面板接管 / 气泡 / @ 补全 / 成员标签页 / 看板 / 群设置 / 视图切换 / 深浅主题）。
+
+## 19. G7 接力模式（2026-11-23 实施）
+
+「一个需求，多个模型接力工作；后面的模型不清晰可以回去问前面的模型。」群聊第四模式 `relay`，复用 G2–G6 全部基建（串行发言 / 流事件 / 只读工具 / 私有日志 / 纪要 / 面板视图），只新增确定性的链式调度器。
+
+### 19.1 产品语义（与作者收口）
+
+- **交棒 = 模型声明**：成员在回复末尾单独一行写 `【交棒】` 才进下一棒；没写则用续写焦点重唤（每棒至多 `RELAY_CAPS.stageSpeaksMax = 4` 次发言），到顶由系统代为推进并出灰条。标记先剥代码围栏再识别（引用提示词示例不误触）；展示层剥标记行、落盘保留原文。
+- **回问 = 只能问前棒**：第 k 棒输出里的 @ 只认链上第 1..k-1 棒（`relayAskTargets`：@all/@自己/@后棒一律忽略，单次至多 2 人）；被问成员收到「只回答不交棒」焦点，答完回到提问者继续（回问优先于交棒标记）。每棒至多回问 `askBacksMax = 2` 次，到顶出灰条强制基于现有信息继续。
+- **链尾 = 自动成果纪要**：链完整跑完（或「结束并总结」中断）时，最后完成的棒再发言一次总结，其内容经 `generateMinutes` 落纪要卡片（署名链尾成员，`source: 'relay'`），复制 / 导出 / 带回会话全复用。
+- **轮次 = 单遍 + 手动再跑**：一条需求跑一遍链即停；新需求（发消息）强制从第 1 棒重跑，「开始接力」按钮在中断后从断点棒续跑（`meta.relay.stage` 持久化已完成棒数），已完成（done）的再跑也是全新一遍。暂停 = 当前发言说完后停（与讨论同款）。
+
+### 19.2 实现落点
+
+- `ai-group-model.js`：`GROUP_MODES` 加 relay；`RELAY_CAPS` / `normalizeRelay`（meta.relay: stage/done/passes）/ `hasHandoffMarker` / `stripHandoffMarker` / `relayAskTargets` / `relayStageFocus`（start/answer/resume/reawake 四类焦点）；`buildMemberMessages` 尾行按 relay 分支（不再说「主持人焦点…无补充」）。
+- `ai-group-runtime.js`：`relays` Map + `runRelayTurn` / `runRelayStage` / `relaySpeak` / `relaySummarize` / `startRelay(opts.fresh)` / `pauseRelay` / `resumeRelay` / `endRelay` / `relaySnapshot`；跨窗口租约与讨论同款（`GroupLeaseAcquire/Release`）；`sendUserMessage` relay 分支（运行中插话进 `pendingUser`，下一棒开跑前以焦点提醒；空闲 = 需求即开工）；`stopAll` 联动 abort；消息 `round` 统一走 `relayRoundOf`（接力群 = 棒次 1 基，回答/总结归入触发它们的棒）；`generateMinutes` 支持 source 署名覆盖（接力署名链尾成员）。
+- `ai-group-view.js` + `ai-group-ui-model.js`：接力徽标 / 「第 k/M 棒 · 名字」chip / 状态文案五态（接力中/已暂停/已完成/中断待续/待开工）/ 主按钮（开始接力·暂停·继续·继续接力）/「结束并总结」走 `endRelay` / 看板按钮隐藏 / 棒次分隔（「第 N 棒」）/ 气泡剥交棒标记 / composer 占位。
+- `ai-group-sidebar.js`：新建弹窗模式第四项；接力时隐藏 主持人/预设/策略/轮数 行（chair 固定 user、轮数不适用）；成员行链序徽标（第 N 棒）+ ▲▼ 调序（勾选顺序 = 链序，在 `memberSwitches` 数组内交换已勾选成员位置）；估算行给接力口径。
+- `dev/mock-backend.js`：接力轮（焦点含棒次/回问/纪要）输出可区分回复——常规棒带【交棒】（链能推进）、回答与纪要不带；接力轮跳过 G5 工具模拟。
+
+### 19.3 验证与收益
+
+- `frontend/test/ai/ai-group-relay.test.mjs`（12 例，登记 `npm test`）：纯函数（marker 识别/剥离、askTargets 前棒过滤、四类焦点、状态文案四态）+ 假后端端到端（链序调度、无标记重唤到顶代为推进、回问闭环与上限、运行中插话注入、endRelay 中断、静音成员建链拒绝、断点续跑不重跑已完成棒）。
+- 收益：多模型各展所长（前棒产出、后棒审查/整合）成为一等工作流；回问机制让后棒不必带着疑问硬编；链序在 UI 上显式可调；全程产出自动沉淀为纪要卡片。

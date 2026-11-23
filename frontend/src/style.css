@@ -13962,6 +13962,11 @@ textarea.dlg-input:focus {
 .gc-member-text { flex: 1; min-width: 0; }
 .gc-member-text .set-title { font-size: 12px; }
 .gc-member-text .set-desc { font-size: 11px; }
+/* 接力链序（G7）：勾选顺序 = 链序；序号徽标 + 上/下移一棒的小按钮只在接力模式勾选后显示 */
+.gc-chain-order { flex: none; font-size: 10px; line-height: 16px; padding: 0 6px; border-radius: 8px; color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); white-space: nowrap; }
+.gc-chain-btn { flex: none; width: 18px; height: 18px; padding: 0; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--muted); font-size: 9px; line-height: 16px; cursor: pointer; }
+.gc-chain-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.gc-chain-btn:disabled { opacity: 0.35; cursor: default; }
 .gc-preflight { margin: 6px 0 10px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 8px; }
 .gc-preflight-summary { display: flex; gap: 6px; align-items: center; }
 .gc-preflight-note { font-size: 11px; color: var(--muted); margin-left: 4px; }

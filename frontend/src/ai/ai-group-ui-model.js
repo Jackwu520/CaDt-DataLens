@@ -9,7 +9,7 @@ export const MERGE_WINDOW_MS = 5 * 60 * 1000;
 
 // 进入时间线的系统事件白名单：runtime 落盘的 meta 事件里这些带人类可读 text；
 // 其余（内部统计类）不进聊天流，避免刷屏。
-const EVENT_TYPES = new Set(['mention', 'compress', 'budget', 'task-update', 'speech-timeout', 'context-overflow']);
+const EVENT_TYPES = new Set(['mention', 'compress', 'budget', 'task-update', 'speech-timeout', 'context-overflow', 'relay']);
 
 export function eventLineText(evt) {
     if (!evt || !EVENT_TYPES.has(evt.type)) return '';
@@ -113,25 +113,42 @@ export function filterMentionCandidates(candidates, query) {
     return candidates.filter((name) => String(name || '').toLowerCase().includes(q));
 }
 
-// 讨论状态文案（工具栏一行）：自由 / 讨论 / 暂停 / 纪要 / 空
-export function groupStatusText(meta, disc) {
+// 讨论状态文案（工具栏一行）：自由 / 讨论 / 暂停 / 纪要 / 空；接力按 run（relaySnapshot）分支
+export function groupStatusText(meta, run) {
     if (!meta) return '';
     if (meta.mode === 'free') return '自由聊天 · 发消息即回，@点名谁谁回，@全体成员人人回';
-    const running = !!(disc && disc.running);
-    const paused = !!(disc && disc.paused);
-    if (running) return '讨论中 · ' + ((disc.speeches || 0)) + ' 次发言';
-    if (paused) return '已暂停 · ' + (disc.error || '点「继续」接着讨论');
+    if (meta.mode === 'relay') return relayStatusText(meta, run);
+    const running = !!(run && run.running);
+    const paused = !!(run && run.paused);
+    if (running) return '讨论中 · ' + ((run.speeches || 0)) + ' 次发言';
+    if (paused) return '已暂停 · ' + (run.error || '点「继续」接着讨论');
     if (meta.minutes) return '本场已产出纪要';
     return '';
 }
 
-// 主按钮文案：开始讨论 / 暂停 / 继续（free 模式不显示）
-export function discussionActionLabel(meta, disc) {
+// 接力状态文案（G7）：进行中 / 暂停 / 已完成 / 中断待续 / 待开工
+function relayStatusText(meta, run) {
+    const relayMeta = meta.relay || {};
+    const count = (run && run.stageCount) || 0;
+    const stage = (run && run.stage) || 0;
+    if (run && run.running) {
+        const at = count ? `第 ${stage}/${count} 棒${run.stageName ? `（${run.stageName}）` : ''}` : '';
+        return '接力中' + (at ? ` · ${at}` : '') + ` · ${(run.speeches || 0)} 次发言`;
+    }
+    if (run && run.paused) return `已暂停 · 停在第 ${stage}${count ? `/${count}` : ''} 棒，点「继续」接着跑`;
+    if (relayMeta.done && count) return `接力已完成（${count} 棒${relayMeta.passes > 1 ? ` · 第 ${relayMeta.passes} 遍` : ''}）· 发新需求或点「开始接力」再跑一遍`;
+    if (relayMeta.stage > 0 && count && !relayMeta.done) return `接力中断于第 ${Math.min(relayMeta.stage, count) + 1} 棒 · 点「继续接力」从断点接着跑`;
+    return '接力待开工 · 发条需求或点「开始接力」，成员按链序交棒';
+}
+
+// 主按钮文案：开始讨论 / 暂停 / 继续（free 不显示）；接力为 开始接力 / 暂停 / 继续
+export function discussionActionLabel(meta, run) {
     if (!meta || meta.mode === 'free') return '';
-    const running = !!(disc && disc.running);
-    const paused = !!(disc && disc.paused);
+    const running = !!(run && run.running);
+    const paused = !!(run && run.paused);
     if (running) return '暂停';
     if (paused) return '继续';
+    if (meta.mode === 'relay') return (meta.relay && meta.relay.stage > 0 && !meta.relay.done) ? '继续接力' : '开始接力';
     if (meta.discussion && meta.discussion.round > 0 && !meta.minutes) return '继续讨论';
     return '开始讨论';
 }

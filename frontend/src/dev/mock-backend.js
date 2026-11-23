@@ -3545,9 +3545,11 @@ const mockBackend = {
         // 群成员只读工具（G5）：roundId 带 #（群命名空间）且下发了 read_file 时模拟一轮工具调用；
         // 真正的读取由面板 execMemberTool 走 mock OpenFile 完成，这里只负责「模型决定调工具」
         const isGroupRound = /#/.test(String(sessionId || ''));
+        // 接力轮（G7）：接力焦点（棒次/回问/纪要）出现时不走 G5 工具模拟，让链能推进
+        const relayRound = isGroupRound && /接力第|【交棒】|成果纪要/.test(prompt);
         const hasReadTool = (tools || []).some((tool) => tool && tool.name === 'read_file');
         const lastIsToolResult = !!(messages || []).length && ((messages[messages.length - 1] || {}).role === 'tool');
-        if (isGroupRound && hasReadTool && !lastIsToolResult) {
+        if (isGroupRound && !relayRound && hasReadTool && !lastIsToolResult) {
             const mention = (prompt.match(/[\w\u4e00-\u9fff-]+\.(?:md|json|txt|csv|yaml)/) || [])[0] || 'sample.json';
             const gmArgs = '{"path": "' + mention + '"}';
             const gmChunks = gmArgs.match(/.{1,16}/gs) || [];
@@ -3564,7 +3566,7 @@ const mockBackend = {
             schedule(() => emit('ai-done', {id: sessionId, finishReason: 'tool'}), 90 + gmChunks.length * 40 + 50);
             return null;
         }
-        if (isGroupRound && hasReadTool && lastIsToolResult) {
+        if (isGroupRound && !relayRound && hasReadTool && lastIsToolResult) {
             const toolMsg = messages[messages.length - 1];
             const finalText = '（mock）已用 read_file 读了「' + String(toolMsg.name || 'file') + '」，结果开头：\n\n> '
                 + String(toolMsg.content || '').split('\n').slice(0, 6).join('\n> ')
@@ -3579,6 +3581,34 @@ const mockBackend = {
                 emit('ai-done', {id: sessionId, finishReason: 'stop', usage: {promptTokens: 40, completionTokens: 56, totalTokens: 96, cachedTokens: 0}});
                 (window.__mockAiRuns || new Map()).delete(sessionId);
             }, finalDelay + 40);
+            return null;
+        }
+        // 接力模式（G7）：带接力焦点时按棒次产出可区分的 mock 回复——常规棒末尾带
+        // 【交棒】（链能推进到下一棒）；被回问的回答与链尾成果纪要不带标记
+        if (relayRound) {
+            const isAnswer = prompt.includes('不要写【交棒】');
+            const isSummary = prompt.includes('成果纪要');
+            const stageMatch = /接力第 (\d+)\/(\d+) 棒/.exec(prompt);
+            let relayText;
+            if (isSummary) {
+                relayText = '## 成果纪要（mock）\n\n- 目标：完成本次接力任务\n- 各棒产出：见上方各成员发言\n- 最终成果：mock 汇总完成\n- 遗留问题：无';
+            } else if (isAnswer) {
+                relayText = '（mock 回答）就你回问的点：按共享对话里已有产出，可以直接接着做。';
+            } else if (stageMatch) {
+                relayText = `〔mock 第 ${stageMatch[1]}/${stageMatch[2]} 棒〕已按需求产出本棒结果（mock 演示）。\n\n【交棒】`;
+            } else {
+                relayText = '〔mock 成员〕已产出本棒结果（mock 演示）。\n\n【交棒】';
+            }
+            const relayChunks = relayText.match(/[^\n]{1,8}|[\n]{1,2}/g) || [];
+            let relayDelay = 30;
+            relayChunks.forEach((chunk, i) => {
+                schedule(() => emit('ai-chunk', {id: sessionId, delta: chunk}), relayDelay + i * slow);
+            });
+            relayDelay += relayChunks.length * slow;
+            schedule(() => {
+                emit('ai-done', {id: sessionId, finishReason: 'stop', usage: {promptTokens: 40, completionTokens: 56, totalTokens: 96, cachedTokens: 0}});
+                (window.__mockAiRuns || new Map()).delete(sessionId);
+            }, relayDelay + 40);
             return null;
         }
         if (mockScenario.has('aibrowser')) {

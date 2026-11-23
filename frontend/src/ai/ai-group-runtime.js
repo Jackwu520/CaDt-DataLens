@@ -13,6 +13,7 @@ import {
     GROUP_MEMBER_MIN,
     GROUP_OUTPUT_RESERVE_TOKENS,
     GROUP_UNLIMITED_ROUNDS_SPEECHES,
+    RELAY_CAPS,
     TIMEOUT_PRESETS,
     applyStatePatch,
     buildChairMessages,
@@ -21,6 +22,7 @@ import {
     deriveMaxSpeeches,
     fallbackPlan,
     foldPrivateSteps,
+    hasHandoffMarker,
     isUnlimitedRounds,
     maxRoundsOf,
     mergeGroupBlock,
@@ -32,9 +34,12 @@ import {
     parseChairContract,
     parseGroupBlock,
     parseMentions,
+    relayAskTargets,
+    relayStageFocus,
     relayWakes,
     sanitizeChairPlan,
     stripGroupBlock,
+    stripHandoffMarker,
 } from './ai-group-model.js';
 import {
     MEMBER_TOOL_GID_PREFIX,
@@ -247,6 +252,7 @@ export function createAIGroupRuntime(deps) {
         groups.delete(id);
         chatQueues.delete(id);
         chatCursors.delete(id);
+        relays.delete(id);
         notify();
         return {ok: true};
     }
@@ -270,6 +276,16 @@ export function createAIGroupRuntime(deps) {
 
     function currentRound(meta) {
         return Math.max(1, (meta && meta.discussion && meta.discussion.round) || 1);
+    }
+
+    // 消息 round 的统一口径：接力群 = 当前棒次（1 基，回答/总结都归入触发它们的棒）；
+    // 其他模式沿用讨论轮次。relays 常量声明在文件后部，调用发生在工厂装配完成后（无 TDZ 问题）。
+    function relayRoundOf(groupId, meta) {
+        if (meta && meta.mode === 'relay') {
+            const r = relays.get(groupId);
+            if (r && r.chain.length) return Math.min(r.stage + 1, r.chain.length);
+        }
+        return currentRound(meta);
     }
 
     // 侧栏列表的「最近一条」预览（G6）：落盘消息时随 meta 写 lastPreview，重启后仍有预览
@@ -614,7 +630,7 @@ export function createAIGroupRuntime(deps) {
             content: stream.content,
             ts: finishedAt,
             turnId: stream.roundId,
-            round: currentRound(g.meta),
+            round: relayRoundOf(stream.groupId, g.meta),
             replyTo: '',
             addressedTo: [],
             stance: (stream.groupBlock && stream.groupBlock.stance) || '',
@@ -850,7 +866,7 @@ export function createAIGroupRuntime(deps) {
             content,
             ts: Date.now(),
             turnId: '',
-            round: currentRound(g.meta),
+            round: relayRoundOf(groupId, g.meta),
             replyTo: '',
             addressedTo: [],
             stance: '',
@@ -874,7 +890,17 @@ export function createAIGroupRuntime(deps) {
             meta.lastPreview = previewOfMessage(msg);
         });
         const d = discussionOf(groupId);
-        if (d.running || d.paused) {
+        if (g.meta.mode === 'relay') {
+            // 接力（G7）：运行中/暂停 → 插话进 pendingUser（下一棒开跑前提醒）；
+            // 空闲 → 需求即开工，自动从第 1 棒开始
+            const r = relayOf(groupId);
+            if (r.running || r.paused) {
+                if (r.pendingUser.length < 5) r.pendingUser.push(content);
+            } else {
+                const started = startRelay(groupId, {fresh: true});
+                if (!started.ok) flash(started.error || '接力启动失败', true);
+            }
+        } else if (d.running || d.paused) {
             // 讨论进行中（§3.9）：@A / @全体成员 → 强制进下一次调度，消息由主持人吸收
             noteMentions(groupId, content);
         } else {
@@ -914,7 +940,7 @@ export function createAIGroupRuntime(deps) {
             content: text,
             ts: Date.now(),
             turnId: '',
-            round: currentRound(g.meta),
+            round: relayRoundOf(groupId, g.meta),
             replyTo: '',
             addressedTo: [],
             stance: '',
@@ -1034,6 +1060,9 @@ export function createAIGroupRuntime(deps) {
         const q = chatQueues.get(groupId);
         if (q && q.running) q.abort = true;
         if (q) q.pending = [];
+        // 接力引擎（G7）同步让位：在飞请求由 AIStop 收尾后，runRelayTurn 按走 stop 归档
+        const r = relays.get(groupId);
+        if (r && r.running) r.abort = true;
         // 工具轮间隔（无在飞请求）也要拦：置标志让续发停止并按 stopped 归档
         for (const stream of streams.values()) {
             if (stream.groupId === groupId && !stream.finished) stream.toolAbort = true;
@@ -1228,17 +1257,21 @@ export function createAIGroupRuntime(deps) {
         const text = (source && source.minutesText) || minutesFromBoard(g.meta);
         const chairAgent = chairAgentOf(g.meta, agentsOf(getAIConfig()));
         const gid = aiNowId('gm-');
+        // source 可覆盖署名（接力总结 = 链尾成员，不是主持人）
+        const signAgent = source && source.agentName
+            ? {id: source.agentId || '', name: source.agentName, color: source.agentColor || ''}
+            : null;
         const msg = {
             gid,
             role: 'assistant',
-            agentId: chairAgent ? chairAgent.id : 'chair',
-            agentName: '主持人',
-            agentColor: chairAgent ? chairAgent.color : '',
+            agentId: signAgent ? signAgent.id : (chairAgent ? chairAgent.id : 'chair'),
+            agentName: signAgent ? signAgent.name : '主持人',
+            agentColor: signAgent ? signAgent.color : (chairAgent ? chairAgent.color : ''),
             model: (source && source.modelName) || '',
             content: text,
             ts: Date.now(),
             turnId: '',
-            round: currentRound(g.meta),
+            round: relayRoundOf(groupId, g.meta),
             replyTo: '',
             addressedTo: [],
             stance: '',
@@ -1530,6 +1563,330 @@ export function createAIGroupRuntime(deps) {
         appendSystemEvent(groupId, {type: 'mention', text: '用户点名：' + (mentions.all ? '@全体成员' : '@' + mentions.names.join(' @'))});
     }
 
+    // ---------- 接力引擎（G7：多模型按序交棒，后者可回问前棒） ----------
+    // 形态镜像讨论引擎：内存态 + meta.relay 持久化进度；跨窗口租约同款。
+    // 交棒 = 成员在回复末尾写【交棒】（模型声明）；回问 = @ 前棒，答完回到提问者。
+
+    const relays = new Map();
+
+    function relayOf(groupId) {
+        let r = relays.get(groupId);
+        if (!r) {
+            r = {
+                running: false,
+                paused: false,
+                abort: false,
+                chain: [],            // 棒次快照（启动时按 memberIds 顺序剔除停用/静音）
+                stage: 0,             // 0 基当前棒
+                passes: 0,
+                speeches: 0,
+                tokens: 0,
+                stageSpeaks: new Map(),  // stage → 本遍该棒已发言次数（含续写/回问续）
+                askCounts: new Map(),    // stage → 本遍该棒已回问次数
+                pendingUser: [],         // 运行中用户插话（下一棒开跑前以焦点提醒）
+                needMinutes: false,      // 「结束并总结」：中断后由最后完成的棒出纪要
+                startedAt: 0,
+                leaseHeld: false,
+                error: '',
+            };
+            relays.set(groupId, r);
+        }
+        return r;
+    }
+
+    function relayAgentOf(groupId, agentId) {
+        return agentsOf(getAIConfig()).find((item) => item && item.id === agentId) || null;
+    }
+
+    // 向后扫该成员最近一条 assistant 消息（跳过其间的系统事件/其他成员；串行轮保证安全）
+    function lastMemberMessage(g, agentId) {
+        const list = Array.isArray(g.messages) ? g.messages : [];
+        for (let i = list.length - 1; i >= 0; i--) {
+            const msg = list[i];
+            if (msg.role === 'assistant' && msg.agentId === agentId) return msg;
+        }
+        return null;
+    }
+
+    function relaySnapshot(groupId) {
+        const r = relays.get(groupId);
+        const g = groups.get(groupId);
+        if (!r || !g) return null;
+        const agent = r.chain[r.stage] ? relayAgentOf(groupId, r.chain[r.stage]) : null;
+        return {
+            running: r.running,
+            paused: r.paused,
+            stage: Math.min(r.stage + 1, Math.max(1, r.chain.length)),
+            stageCount: r.chain.length,
+            stageName: agent ? agent.name : '',
+            speeches: r.speeches,
+            done: !!(g.meta.relay && g.meta.relay.done),
+            error: r.error,
+        };
+    }
+
+    async function relaySpeak(groupId, r, agentId, focus) {
+        const res = await speak(groupId, agentId, {focus});
+        if (!res.ok) {
+            const agent = relayAgentOf(groupId, agentId);
+            r.error = res.error || '成员调用失败';
+            await appendSystemEvent(groupId, {type: 'relay', text: `${agent ? agent.name : '成员'} 发言失败：${res.error || '未知原因'}`});
+            return {ok: false};
+        }
+        const result = await res.done;
+        r.speeches++;
+        r.tokens += (result.usage && result.usage.totalTokens) || 0;
+        notify();
+        return {ok: true, status: result.status};
+    }
+
+    // 单棒：发言 → 回问闭环（@ 前棒，答完回来续）→ 检查【交棒】标记；无标记重唤，
+    // 到 stageSpeaksMax 由系统代为推进。返回 'advance' | 'stop' | 'error'。
+    async function runRelayStage(groupId, r) {
+        const g = groups.get(groupId);
+        const agentId = r.chain[r.stage];
+        const agent = relayAgentOf(groupId, agentId);
+        if (!agent || !agent.enabled || (g.meta.mutedAgentIds || []).includes(agentId)) {
+            await appendSystemEvent(groupId, {type: 'relay', text: `第 ${r.stage + 1} 棒成员不可用，跳过`});
+            return 'advance';
+        }
+        const count = r.chain.length;
+        const earlier = r.chain.slice(0, r.stage)
+            .map((id) => {
+                const item = relayAgentOf(groupId, id);
+                return item ? {id, name: item.name} : null;
+            })
+            .filter(Boolean);
+        const next = r.stage + 1 < count ? relayAgentOf(groupId, r.chain[r.stage + 1]) : null;
+        const speaks = () => r.stageSpeaks.get(r.stage) || 0;
+        const asks = () => r.askCounts.get(r.stage) || 0;
+        // 暂停/中断后续跑：已讲过 → 用续写焦点（不再重发完整开工契约）
+        let focus = speaks() > 0
+            ? relayStageFocus({kind: 'reawake'})
+            : relayStageFocus({kind: 'start', index: r.stage, count, nextName: next ? next.name : ''});
+        if (r.pendingUser.length) {
+            focus += `\n用户刚补充了 ${r.pendingUser.length} 条消息（见共享对话），请纳入考虑。`;
+            r.pendingUser = [];
+        }
+        while (speaks() < RELAY_CAPS.stageSpeaksMax && !r.abort) {
+            if (r.paused) return 'paused'; // 当前发言说完后停（与讨论同款）
+            const speech = await relaySpeak(groupId, r, agentId, focus);
+            if (!speech.ok) return 'error';
+            if (speech.status !== 'done') return 'stop'; // 超时/停止：消息已按 interrupted/error 归档
+            r.stageSpeaks.set(r.stage, speaks() + 1);
+            const last = lastMemberMessage(g, agentId);
+            if (!last) return 'error';
+            // 回问优先于交棒标记：问了就等答案，答完再续
+            const targets = asks() < RELAY_CAPS.askBacksMax
+                ? relayAskTargets(String(last.content || ''), {speakerId: agentId, earlierNames: earlier})
+                : [];
+            if (targets.length) {
+                r.askCounts.set(r.stage, asks() + 1);
+                let answered = false;
+                for (const targetId of targets) {
+                    const answerer = relayAgentOf(groupId, targetId);
+                    const answer = await relaySpeak(groupId, r, targetId, relayStageFocus({kind: 'answer', askerName: agent.name}));
+                    if (!answer.ok) continue;
+                    if (answer.status !== 'done') return 'stop';
+                    answered = true;
+                }
+                if (answered) {
+                    focus = relayStageFocus({kind: 'resume', index: r.stage, count, nextName: next ? next.name : ''});
+                    continue;
+                }
+                await appendSystemEvent(groupId, {type: 'relay', text: `前棒未能回答「${agent.name}」的回问，请基于现有信息继续`});
+            } else if (asks() >= RELAY_CAPS.askBacksMax && !hasHandoffMarker(last.content)
+                && relayAskTargets(String(last.content || ''), {speakerId: agentId, earlierNames: earlier}).length) {
+                await appendSystemEvent(groupId, {type: 'relay', text: `「${agent.name}」的回问次数已达上限，请基于现有信息继续`});
+            }
+            if (hasHandoffMarker(last.content)) return 'advance';
+            if (speaks() < RELAY_CAPS.stageSpeaksMax) {
+                focus = relayStageFocus({kind: 'reawake'});
+                continue;
+            }
+            await appendSystemEvent(groupId, {type: 'relay', text: `「${agent.name}」未声明交棒，系统代为推进`});
+            return 'advance';
+        }
+        return r.abort ? 'stop' : 'advance';
+    }
+
+    // 成果纪要：最后完成的棒再讲一次总结，其内容经 generateMinutes 落纪要卡片
+    async function relaySummarize(groupId, r) {
+        const g = groups.get(groupId);
+        if (!g || r.stage <= 0) return;
+        const doneIdx = Math.min(r.stage, r.chain.length) - 1;
+        const agentId = r.chain[doneIdx];
+        const agent = agentId ? relayAgentOf(groupId, agentId) : null;
+        if (!agent) return;
+        const speech = await relaySpeak(groupId, r, agentId,
+            '接力已结束。请把本场全部产出整理成一份成果纪要（Markdown）：任务目标、各棒分工与产出、最终成果、遗留问题。只输出纪要本身，不要写【交棒】。');
+        if (!speech.ok || speech.status !== 'done') {
+            await appendSystemEvent(groupId, {type: 'relay', text: '成果纪要生成失败，可再跑一遍接力'});
+            return;
+        }
+        const last = lastMemberMessage(g, agentId);
+        const text = stripHandoffMarker(String((last && last.content) || '')).trim();
+        if (!text) return;
+        await generateMinutes(groupId, {
+            minutesText: text,
+            source: 'relay',
+            modelName: agent.name,
+            agentId: agent.id,
+            agentName: agent.name,
+            agentColor: agent.color,
+        });
+    }
+
+    async function runRelayTurn(groupId) {
+        const g = groups.get(groupId);
+        const r = relayOf(groupId);
+        if (!g) return;
+        r.running = true;
+        r.error = '';
+        notify();
+        // 群租约（与讨论同款）：整场接力一个群同一时刻只有一个窗口主持
+        if (backend.GroupLeaseAcquire) {
+            try {
+                const lease = await backend.GroupLeaseAcquire(groupId, '');
+                if (!lease || lease.busy) {
+                    r.running = false;
+                    r.error = '群聊正在另一窗口接力';
+                    notify();
+                    flash('群聊正在另一窗口接力', true);
+                    return;
+                }
+                r.leaseHeld = true;
+            } catch (e) {}
+        }
+        try {
+            while (!r.abort && r.stage < r.chain.length) {
+                if (r.paused) return;
+                if (r.startedAt && Date.now() - r.startedAt > (g.meta.timeouts.discussionTotalMs || 3600000)) {
+                    await appendSystemEvent(groupId, {type: 'budget', text: '接力达到时长上限，已停止并生成总结'});
+                    r.needMinutes = true;
+                    break;
+                }
+                if (g.meta.maxTokensPerDiscussion > 0 && r.tokens >= g.meta.maxTokensPerDiscussion) {
+                    await appendSystemEvent(groupId, {type: 'budget', text: '接力达到 token 预算上限，已停止并生成总结'});
+                    r.needMinutes = true;
+                    break;
+                }
+                const outcome = await runRelayStage(groupId, r);
+                if (outcome !== 'advance') break;
+                r.stage++;
+                await saveMeta(groupId, (meta) => {
+                    meta.relay.stage = r.stage;
+                    meta.relay.passes = r.passes;
+                });
+            }
+        } finally {
+            const completed = !r.abort && r.stage >= r.chain.length && r.chain.length > 0;
+            r.running = false;
+            if (r.leaseHeld && backend.GroupLeaseRelease) {
+                r.leaseHeld = false;
+                Promise.resolve(backend.GroupLeaseRelease(groupId)).catch(() => {});
+            }
+            try {
+                if (r.needMinutes || completed) await relaySummarize(groupId, r);
+                if (completed) {
+                    await saveMeta(groupId, (meta) => {
+                        meta.relay.done = true;
+                        meta.relay.stage = r.stage;
+                    });
+                    await appendSystemEvent(groupId, {type: 'relay', text: `接力完成 · 共 ${r.chain.length} 棒`});
+                }
+            } catch (e) {
+                console.error('接力收尾失败', e);
+            }
+            notify();
+        }
+    }
+
+    // opts.fresh：新需求强制从第 1 棒重跑；缺省时上次未跑完（中断）则从断点棒继续，
+    // 已完成（done）的重跑也是全新一遍。「开始接力」按钮走断点续跑语义。
+    function startRelay(groupId, opts = {}) {
+        const g = groups.get(groupId);
+        if (!g) return {ok: false, error: '群聊不存在'};
+        if (g.meta.mode !== 'relay') return {ok: false, error: '该群不是接力模式'};
+        const r = relayOf(groupId);
+        if (r.running) return {ok: false, error: '接力已在进行'};
+        if (activeStreamOf(groupId)) return {ok: false, error: '已有成员正在发言（串行轮）'};
+        const agents = agentsOf(getAIConfig());
+        const muted = new Set(g.meta.mutedAgentIds || []);
+        const chain = g.meta.memberIds.filter((id) => {
+            const agent = agents.find((item) => item && item.id === id);
+            return agent && agent.enabled && !muted.has(id);
+        });
+        if (chain.length < GROUP_MEMBER_MIN) {
+            return {ok: false, error: `可用成员不足（${chain.length} 位，接力至少 ${GROUP_MEMBER_MIN} 棒；先到 应用页面 → 智能体 启用成员）`};
+        }
+        const relayMeta = g.meta.relay || {};
+        const resumeStage = relayMeta.done ? chain.length : Math.min(relayMeta.stage || 0, chain.length);
+        const fresh = opts.fresh === true || resumeStage >= chain.length;
+        r.chain = chain;
+        r.stage = fresh ? 0 : resumeStage;
+        r.abort = false;
+        r.paused = false;
+        r.error = '';
+        r.speeches = 0;
+        r.tokens = 0;
+        r.stageSpeaks = new Map();
+        r.askCounts = new Map();
+        r.pendingUser = [];
+        r.needMinutes = false;
+        r.startedAt = Date.now();
+        r.passes = ((g.meta.relay && g.meta.relay.passes) || 0) + 1;
+        saveMeta(groupId, (meta) => {
+            meta.relay.stage = r.stage;
+            meta.relay.done = false;
+            meta.relay.passes = r.passes;
+        }).catch(() => {});
+        if (!fresh && r.stage > 0) {
+            appendSystemEvent(groupId, {type: 'relay', text: `接力从第 ${r.stage + 1} 棒继续`}).catch(() => {});
+        }
+        // 不 await：发送路径立即返回，流事件照常推给视图
+        runRelayTurn(groupId).catch((e) => {
+            r.running = false;
+            r.error = String((e && e.message) || e);
+            notify();
+        });
+        return {ok: true};
+    }
+
+    function pauseRelay(groupId) {
+        const r = relays.get(groupId);
+        if (!r || !r.running) return {ok: false, error: '接力未在进行'};
+        r.paused = true; // 当前发言说完后停（与讨论同款）
+        notify();
+        return {ok: true};
+    }
+
+    function resumeRelay(groupId) {
+        const g = groups.get(groupId);
+        const r = relayOf(groupId);
+        if (!g) return {ok: false, error: '群聊不存在'};
+        if (!r.paused || r.running) return {ok: false, error: '接力未处于暂停'};
+        r.paused = false;
+        r.abort = false;
+        runRelayTurn(groupId).catch((e) => {
+            r.running = false;
+            r.error = String((e && e.message) || e);
+            notify();
+        });
+        return {ok: true};
+    }
+
+    function endRelay(groupId) {
+        const r = relays.get(groupId);
+        if (!r || (!r.running && !r.paused)) return {ok: false, error: '接力未在进行'};
+        r.abort = true;
+        r.needMinutes = true;
+        // 「结束并总结」立即中断在飞请求；总结由最后完成的棒输出
+        stopAll(groupId);
+        notify();
+        return {ok: true};
+    }
+
     // ---------- 手动压缩群聊数据（§3.11：唯一能压缩共享对话的路径） ----------
 
     // cutoff 计算：默认保留最近 keepRounds 轮全文（§16.14）；keepRounds=0 表示全部进摘要
@@ -1776,6 +2133,12 @@ export function createAIGroupRuntime(deps) {
         resumeDiscussion,
         endDiscussion,
         discussionSnapshot,
+        // 接力引擎（G7）
+        startRelay,
+        pauseRelay,
+        resumeRelay,
+        endRelay,
+        relaySnapshot,
         compressShared,
         // 任务板与纪要（G4）
         updateActionItem,

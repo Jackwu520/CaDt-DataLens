@@ -28,6 +28,7 @@ export const GROUP_MODES = [
     {id: 'roundtable', label: '圆桌'},
     {id: 'task', label: '任务'},
     {id: 'free', label: '自由'},
+    {id: 'relay', label: '接力'},
 ];
 
 // 目标（§6.2）：影响主持人提示与纪要结构
@@ -222,6 +223,7 @@ export function normalizeGroupMeta(raw) {
         mutedAgentIds: Array.isArray(source.mutedAgentIds) ? source.mutedAgentIds.map(String).filter(Boolean) : [],
         roles: normalizeRoles(source.roles),
         discussion: normalizeDiscussion(source.discussion),
+        relay: normalizeRelay(source.relay),
         sharedSummary: normalizeSharedSummary(source.sharedSummary),
         minutes: source.minutes && typeof source.minutes === 'object' ? source.minutes : null,
         lastMessageId: String(source.lastMessageId || ''),
@@ -411,7 +413,7 @@ export function buildMemberMessages({member, group, sharedMessages, ownSteps, pa
     const systemPrompt = buildMemberSystemPrompt({
         agent: member,
         participantsText,
-        modeLabel: meta.mode === 'task' ? '任务协作' : (meta.mode === 'free' ? '自由聊天' : '圆桌讨论'),
+        modeLabel: meta.mode === 'task' ? '任务协作' : (meta.mode === 'free' ? '自由聊天' : (meta.mode === 'relay' ? '接力流水线' : '圆桌讨论')),
         round: (meta.discussion && meta.discussion.round) || 1,
         goal: meta.goal,
         boardText,
@@ -470,9 +472,11 @@ export function buildMemberMessages({member, group, sharedMessages, ownSteps, pa
         messages.push({role: 'user', content: `[此前讨论的摘要]\n${summary.text}`});
     }
     // 尾巴：永远以 user 结束
-    const tail = focus
-        ? `轮到你（${memberName}）发言。主持人焦点：${focus}\n请回应相关成员的具体观点；如无新信息，明确说「无补充」。`
-        : `轮到你（${memberName}）发言。\n请回应相关成员的具体观点；如无新信息，明确说「无补充」。`;
+    const tail = meta.mode === 'relay'
+        ? `轮到你（${memberName}）发言（接力棒次见焦点）。${focus || ''}\n请直接给出你这棒的产出。`
+        : focus
+            ? `轮到你（${memberName}）发言。主持人焦点：${focus}\n请回应相关成员的具体观点；如无新信息，明确说「无补充」。`
+            : `轮到你（${memberName}）发言。\n请回应相关成员的具体观点；如无新信息，明确说「无补充」。`;
     messages.push({role: 'user', content: tail});
 
     // 连续同角色合并（部分提供商拒绝连续同角色）
@@ -817,6 +821,84 @@ export function relayWakes(text, ctx) {
     return wakes;
 }
 
+// ==================== 接力模式（G7：多模型按序交棒，后者可回问前棒） ====================
+
+// 接力上限：每棒成员自己最多发言次数（首讲 + 续写/回问后续）；每棒回问次数；
+// 单次回问最多 @2 位前棒（沿自由聊天 parseMentions 语义）。交棒标记写在回复末尾。
+export const RELAY_CAPS = {
+    stageSpeaksMax: 4,
+    askBacksMax: 2,
+    answersPerAsk: 2,
+    marker: '【交棒】',
+};
+
+// meta.relay 归一化：持久化接力进度（读盘不丢），stage 为 0 基棒次，passes 为「开始接力」
+// 手动重跑的遍数。引擎内存态（running/paused/chain…）不落盘，讨论引擎同款语义。
+export function normalizeRelay(raw) {
+    const r = raw && typeof raw === 'object' ? raw : {};
+    return {
+        stage: clampInt(r.stage, 0, GROUP_MEMBER_MAX, 0),
+        done: r.done === true,
+        passes: clampInt(r.passes, 0, 999, 0),
+    };
+}
+
+// 交棒标记识别：先剥代码围栏/行内代码再匹配，防止成员引用提示词示例误触发。
+export function hasHandoffMarker(text) {
+    const cleaned = String(text || '')
+        .replace(/```[\s\S]*?```/g, ' ')
+        .replace(/`[^`]*`/g, ' ');
+    return cleaned.includes(RELAY_CAPS.marker);
+}
+
+// 剥掉独立的标记行（展示层用；落盘保留原样，引擎判交棒读原文）。行内混排的不剥。
+export function stripHandoffMarker(text) {
+    return String(text || '').replace(/(^|\n)[ \t]*【交棒】[ \t]*(?=\n|$)/g, '$1').replace(/^\n+/, '').replace(/\n+$/, '');
+}
+
+// 回问目标解析（纯函数）：成员回复里的 @ 只认「链上的前棒」；@all/@自己/@非前棒
+// （后棒、非成员）一律忽略；保序去重，≤ answersPerAsk。返回前棒 agentId 列表。
+// earlierNames: [{id, name}]（已按链序排好、不含当前棒及之后）。
+export function relayAskTargets(text, {speakerId, earlierNames}) {
+    const mentions = parseMentions(text, (earlierNames || []).map((m) => m && m.name));
+    if (mentions.all) return [];
+    const byName = new Map((earlierNames || []).map((m) => [m.name, m.id]));
+    const out = [];
+    for (const name of mentions.names) {
+        const id = byName.get(name);
+        if (!id || id === speakerId || out.includes(id)) continue;
+        out.push(id);
+        if (out.length >= RELAY_CAPS.answersPerAsk) break;
+    }
+    return out;
+}
+
+// 接力焦点文案（纯函数）。kind：
+// - start   第 k 棒开工（尾棒要求整合产出）；index 0 基、count 总棒数
+// - answer  前棒被回问：只回答问题本身
+// - resume  提问者收到回答后继续
+// - reawake 没写交棒标记被重唤
+export function relayStageFocus({kind, index, count, nextName, askerName}) {
+    const k = (Number(index) || 0) + 1;
+    const n = Math.max(1, Number(count) || 1);
+    const markerRule = `完成后在回复最后单独一行写${RELAY_CAPS.marker}，交给下一棒`;
+    if (kind === 'answer') {
+        return `接力链上的成员「${askerName || '后棒成员'}」在群里 @ 了你提问（问题见其发言）。请直接回答问题本身：不要展开新工作、不要替它交棒，也不要写${RELAY_CAPS.marker}。`;
+    }
+    if (kind === 'resume') {
+        return `你回问的成员已在上面回答了你的问题。请继续完成你这棒的产出；${markerRule}。`;
+    }
+    if (kind === 'reawake') {
+        return `你还没有写${RELAY_CAPS.marker}，接力无法交棒。请继续完成你这棒的产出；确实完成时，在回复最后单独一行写${RELAY_CAPS.marker}。`;
+    }
+    const isTail = k >= n;
+    const duty = isTail
+        ? `你是接力最后一棒（第 ${k}/${n} 棒）：前面成员的产出都在共享对话里，请整合并给出最终交付成果，收尾要完整。`
+        : `你是接力第 ${k}/${n} 棒${nextName ? `（下一棒：${nextName}）` : ''}：请完成你这一棒负责的部分，产出写清楚，让下一棒能直接接手。`;
+    const askRule = isTail ? '' : `对前面成员的工作有疑问时，可以在回复里 @ 前面棒次成员的名字提问（最多 ${RELAY_CAPS.askBacksMax} 次，回答后会回到你继续）；`;
+    return `${duty}${askRule}${markerRule}。`;
+}
+
 // 主持人超时档（§3.12）：思考主持按 chairThinkingMs，标准按 chairMs
 export function chairTimeouts(meta, chairAgent, profiles) {
     const timeouts = (meta && meta.timeouts) || TIMEOUT_PRESETS.standard.timeouts;
@@ -962,7 +1044,7 @@ export function buildGroupDraft({agents, params}) {
     }
 
     const mode = String(p.mode == null ? '' : p.mode).trim() || 'roundtable';
-    if (!GROUP_MODES.some((item) => item.id === mode)) return {ok: false, error: 'mode 只能是 roundtable / task / free'};
+    if (!GROUP_MODES.some((item) => item.id === mode)) return {ok: false, error: 'mode 只能是 roundtable / task / free / relay（relay 按成员顺序接力）'};
     const goal = String(p.goal == null ? '' : p.goal).trim() || 'decide';
     if (!GROUP_GOALS.some((item) => item.id === goal)) return {ok: false, error: 'goal 只能是 explore / decide / plan / review'};
     // 0 = 不限轮次（手动结束）；默认 5。发言上限按成员数×轮数推导（G6），

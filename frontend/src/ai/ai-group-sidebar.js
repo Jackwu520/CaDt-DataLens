@@ -245,6 +245,7 @@ export function createAIGroupSidebar(deps) {
             {value: 'roundtable', label: '圆桌讨论（推荐）', selected: true},
             {value: 'task', label: '任务协作（主持人拆任务板）'},
             {value: 'free', label: '自由聊天（像微信群：@谁谁回）'},
+            {value: 'relay', label: '接力流水线（多模型按序交棒，后者可回问前者）'},
         ]}));
         // 预设（§1.4）：辩论/评审给成员分配角色，发言顺序按 正 → 反 → 评审 交替
         const presetCtl = row('预设', createSelect({options: [
@@ -290,13 +291,29 @@ export function createAIGroupSidebar(deps) {
                 item.appendChild(badge);
                 const sw = createSwitch({checked: false});
                 item.appendChild(sw.element);
+                // 接力链序（G7）：勾选顺序 = 链序；徽标 + ▲▼ 只在接力模式勾选后显示
+                const chainOrder = node('span', 'gc-chain-order hidden');
+                item.appendChild(chainOrder);
+                const chainUp = node('button', 'gc-chain-btn hidden');
+                chainUp.type = 'button';
+                chainUp.textContent = '▲';
+                chainUp.dataset.tip = '把该成员在接力链中上移一棒';
+                chainUp.addEventListener('click', () => moveChainMember(agent.id, -1));
+                const chainDown = node('button', 'gc-chain-btn hidden');
+                chainDown.type = 'button';
+                chainDown.textContent = '▼';
+                chainDown.dataset.tip = '把该成员在接力链中下移一棒';
+                chainDown.addEventListener('click', () => moveChainMember(agent.id, 1));
+                item.appendChild(chainUp);
+                item.appendChild(chainDown);
                 // 辩论/评审预设的角色输入（勾选后显示；占位按序号给正/反/评审提示）
                 const roleInput = createInput({placeholder: '角色（如 正方 / 反方 / 评审）', maxlength: '80'});
                 roleInput.element.classList.add('gc-member-role');
                 roleInput.element.classList.add('hidden');
                 item.appendChild(roleInput.element);
                 roleInputs[agent.id] = roleInput;
-                memberSwitches.push({agentId: agent.id, control: sw.control, index: memberSwitches.length});
+                memberSwitches.push({agentId: agent.id, control: sw.control, index: memberSwitches.length,
+                    chainOrder, chainUp, chainDown});
                 memberItems.push({agentId: agent.id, group: part.group, item});
                 sw.control.addEventListener('change', () => {
                     roleInput.element.classList.toggle('hidden', !sw.control.checked);
@@ -307,6 +324,22 @@ export function createAIGroupSidebar(deps) {
             }
         }
         let filterCtl = null;
+        // 接力链调序（G7）：在 memberSwitches 数组内交换两个已勾选成员的位置（跳过未勾选），
+        // 勾选顺序 = 链序；行保持分组分区不动，序号徽标随 refreshChainOrder 重排
+        const moveChainMember = (agentId, delta) => {
+            const pickedIdx = memberSwitches
+                .map((sw, i) => (sw.control.checked ? i : -1))
+                .filter((i) => i >= 0);
+            const rank = pickedIdx.indexOf(memberSwitches.findIndex((sw) => sw.agentId === agentId));
+            const nextRank = rank + delta;
+            if (rank < 0 || nextRank < 0 || nextRank >= pickedIdx.length) return;
+            const a = pickedIdx[rank];
+            const b = pickedIdx[nextRank];
+            const tmp = memberSwitches[a];
+            memberSwitches[a] = memberSwitches[b];
+            memberSwitches[b] = tmp;
+            refreshDerived();
+        };
         // 成员可见性单一出口：分组过滤（>4 组时的下拉）× 折叠（组头点击）共同决定；
         // 折叠组保留组头（可展开），只藏成员行
         const applyMemberVisibility = () => {
@@ -395,6 +428,7 @@ export function createAIGroupSidebar(deps) {
             refreshModeVisibility();
             refreshChairVisibility();
             refreshPresetDefaults();
+            refreshChainOrder();
             refreshPreflight(preflightBox, estLine, agents, profiles);
         };
         chairKindCtl.control.addEventListener('change', refreshDerived);
@@ -464,20 +498,40 @@ export function createAIGroupSidebar(deps) {
         void 0; // kind=ai 与 member 共用同一选择器，选项含义在 change 时重算
     }
 
-    // 自由聊天没有主持人/预设/策略/轮数（消息即唤醒，无讨论循环）——整行隐藏
+    // 自由聊天没有主持人/预设/策略/轮数（消息即唤醒，无讨论循环）；接力同样无主持人/
+    // 预设/轮数（链是确定性的，chair 固定 user、轮数不适用）——整行隐藏
     function refreshModeVisibility() {
         if (!createControls) return;
-        const free = createControls.mode.control.value === 'free';
+        const mode = createControls.mode.control.value;
+        const hideRows = mode === 'free' || mode === 'relay';
         for (const ctl of [createControls.preset, createControls.chairKind, createControls.policy, createControls.rounds]) {
-            if (ctl && ctl.wrapEl) ctl.wrapEl.classList.toggle('hidden', free);
+            if (ctl && ctl.wrapEl) ctl.wrapEl.classList.toggle('hidden', hideRows);
         }
         const chairRow = createControls.chairAgentWrap;
-        if (chairRow) chairRow.classList.toggle('hidden', free);
+        if (chairRow) chairRow.classList.toggle('hidden', hideRows);
+    }
+
+    // 接力链序徽标与 ▲▼ 显隐（G7）：只在接力模式 + 已勾选时显示；序号 = 勾选顺序
+    function refreshChainOrder() {
+        if (!createControls) return;
+        const relay = createControls.mode.control.value === 'relay';
+        const pickedTotal = createControls.memberSwitches.filter((sw) => sw.control.checked).length;
+        let rank = 0;
+        for (const sw of createControls.memberSwitches) {
+            const show = relay && sw.control.checked;
+            sw.chainOrder.classList.toggle('hidden', !show);
+            if (show) sw.chainOrder.textContent = '第' + (++rank) + '棒';
+            sw.chainUp.classList.toggle('hidden', !show);
+            sw.chainDown.classList.toggle('hidden', !show);
+            sw.chainUp.disabled = !show || rank <= 1;
+            sw.chainDown.disabled = !show || rank >= pickedTotal;
+        }
     }
 
     // 辩论/评审预设（§1.4）：切预设时按勾选顺序填默认角色（正方/反方/评审…）并调目标
     function refreshPresetDefaults() {
         if (!createControls) return;
+        if (createControls.mode.control.value === 'relay') return; // 接力不用预设角色
         const preset = createControls.preset.control.value;
         if (preset === 'standard') return;
         const picked = createControls.memberSwitches.filter((sw) => sw.control.checked);
@@ -542,8 +596,12 @@ export function createAIGroupSidebar(deps) {
         }
         box.appendChild(detail);
         if (estLine) {
-            const free = createControls && createControls.mode.control.value === 'free';
-            if (free) {
+            const mode = createControls ? createControls.mode.control.value : '';
+            if (mode === 'relay') {
+                estLine.textContent = memberIds.length >= 2
+                    ? `接力链：${memberIds.length} 棒（按勾选顺序，行上 ▲▼ 可调序）；每棒最多 4 次发言（含 2 次回问）；跑完自动出成果纪要`
+                    : '勾选 2–8 位成员组成接力链（勾选顺序 = 链序）';
+            } else if (mode === 'free') {
                 estLine.textContent = memberIds.length >= 1
                     ? `自由聊天按消息唤醒：每条消息至少 1 次调用，@全体成员 ≈ ${memberIds.length} 次/条`
                     : '勾选 2–8 位成员后开始聊天';
@@ -562,24 +620,26 @@ export function createAIGroupSidebar(deps) {
 
     function collectCreateDraft() {
         if (!createControls) return {memberIds: []};
-        const chairKind = createControls.chairKind.control.value;
+        const mode = normalizeGroupMode(createControls.mode.control.value);
+        const isRelay = mode === 'relay';
+        const chairKind = isRelay ? 'user' : createControls.chairKind.control.value;
         const memberIds = pickedMemberIds();
-        let chairAgentId = createControls.chairAgent.control.value;
+        let chairAgentId = isRelay ? '' : createControls.chairAgent.control.value;
         if (chairKind === 'member' && !memberIds.includes(chairAgentId)) {
             chairAgentId = memberIds[0] || '';
         }
-        // 模式三值直传（归一化在 ai-group-model 的 normalizeGroupMode 单一来源）：
+        // 模式直传（归一化在 ai-group-model 的 normalizeGroupMode 单一来源）：
         // 这里曾写成「非 task 即 roundtable」，把 free 静默改写成圆桌，让自由聊天在 UI 上不可达。
         return {
             title: String(createControls.title.control.value || '').trim(),
             topic: String(createControls.topic.control.value || '').trim(),
             goal: createControls.goal.control.value,
-            mode: normalizeGroupMode(createControls.mode.control.value),
-            roles: collectRoles(),
+            mode,
+            roles: isRelay ? {} : collectRoles(),
             memberIds,
             chair: {kind: chairKind, agentId: chairKind === 'user' ? '' : chairAgentId, policy: createControls.policy.control.value},
-            // 轮数三值直传（'0' = 不限轮次；Number 而不是 ||，否则 0 会被兜成 2）
-            maxRounds: Number(createControls.rounds.control.value),
+            // 轮数三值直传（'0' = 不限轮次；Number 而不是 ||，否则 0 会被兜成 2）；接力不适用轮数
+            maxRounds: isRelay ? 0 : Number(createControls.rounds.control.value),
             timeoutPreset: createControls.timeout.control.value,
         };
     }
