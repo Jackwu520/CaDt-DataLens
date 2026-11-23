@@ -307,7 +307,8 @@ powershell -ExecutionPolicy Bypass -File tools/rebuild-exe.ps1
 安装包使用 NSIS 构建（需先安装 [NSIS 3](https://nsis.sourceforge.io/) 并让 `makensis` 在 PATH 中）。完整的工具准备、版本号规则、升级/卸载行为、签名和发布检查清单见 **[打包与发布流程](docs/packaging.md)**。
 
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1  # 构建 + 代码签名 + 打包
+tools\build-installer.cmd                                            # 双击或命令行运行：构建 + 代码签名 + 打包
+tools\build-installer.cmd -SkipSign                                  # 跳过签名（本机试装）
 ```
 
 产物在 `build/bin/CaDt-DataLens-amd64-installer.exe`，按当前用户安装到 `%LOCALAPPDATA%\Programs\CaDt-DataLens`，无需管理员权限。安装时可勾选文件关联、资源管理器右键菜单（默认勾选，写入 HKCU）、Agent Skill、用户 PATH、桌面快捷方式（默认不勾选）。安装包自动检测并静默安装 WebView2 运行时，创建开始菜单快捷方式和卸载项；覆盖安装沿用上次安装目录；卸载撤销注册表集成，但保留 `%APPDATA%\CandySweet\CaDt-DataLens` 下的配置和安装目录下的 `plugins\`。注册表集成由 `datalens.exe --integrate=... / --unintegrate=all` 完成，与程序内“设置 → 系统集成”共用同一套逻辑。

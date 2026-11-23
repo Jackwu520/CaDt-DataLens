@@ -186,8 +186,9 @@ go build -o datalens.exe . && ./datalens.exe
 # -SkipTest 跳过测试门 / -KeepRunning 不停实例 / -Devtools 带调试面板
 powershell -ExecutionPolicy Bypass -File tools/rebuild-exe.ps1
 
-# 构建安装包（需 NSIS 3，makensis 在 PATH；内部同样是前端构建 + syso + go build，再 makensis）
-powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1
+# 构建安装包（双击入口 tools/build-installer.cmd；需 NSIS 3 + signtool；
+# 内部是前端构建 + syso + go build + 签名 + WebView2 引导器 + makensis + 验签，不跑测试门）
+powershell -ExecutionPolicy Bypass -File tools/build-installer.ps1
 
 # Go 测试
 go test ./...

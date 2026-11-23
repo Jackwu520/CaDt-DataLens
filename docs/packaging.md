@@ -17,12 +17,12 @@
 | NSIS 3（`makensis`） | 生成安装包 | 安装 [NSIS](https://nsis.sourceforge.io/)，或用便携版目录 |
 | `signtool` | 代码签名 | Windows SDK，或 NuGet 包 `Microsoft.Windows.SDK.BuildTools` |
 
-`scripts/build-installer.ps1` 自动查找工具，顺序如下：
+`tools/build-installer.ps1` 自动查找工具，顺序如下：
 
 - `makensis`：`-MakeNsis` 参数 → 环境变量 `makensis` → PATH → `%LOCALAPPDATA%\cadt-tools\**` → `%LOCALAPPDATA%\Temp\nsis-portable\**` → `C:\Program Files (x86)\NSIS\makensis.exe`
 - `signtool`：`-SignTool` 参数 → 环境变量 `signtool` → PATH → `%LOCALAPPDATA%\cadt-tools\sdk-buildtools\bin\*\x64\signtool.exe` → Windows Kits 目录
 
-程序本体由 `wails3 generate syso` + `go build -tags production` 构建（`tools/rebuild-exe.ps1` / `scripts/build-installer.ps1` 已封装）；安装包由脚本自行调用 `makensis`，缺失时报错而不是静默跳过。
+程序本体由 `wails3 generate syso` + `go build -tags production` 构建（`tools/rebuild-exe.ps1` / `tools/build-installer.ps1` 已封装）；安装包由脚本自行调用 `makensis`，缺失时报错而不是静默跳过。
 
 ## 2. 版本号
 
@@ -61,15 +61,17 @@ powershell -ExecutionPolicy Bypass -File tools/rebuild-exe.ps1 -Devtools
 一键构建（含签名）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1
+tools\build-installer.cmd                 # 双击入口；参数原样透传给下面的 ps1
+powershell -ExecutionPolicy Bypass -File tools/build-installer.ps1
 ```
 
 脚本流程：
 
 1. `npm run build` → `wails3 generate syso` → `go build -tags production,devtools`：编译程序并写入图标/清单/版本资源。
 2. 用 `signtool` 签名 `build/bin/CaDt-DataLens.exe`（安装包内嵌的就是这个已签名文件）。
-3. 在 `build/windows/installer` 目录手工调用 `makensis` 重新打包，并传入 `-DSIGNTOOL`、`-DSIGN_ARGS`；`project.nsi` 中的 `!finalize` / `!uninstfinalize` 负责给安装包和卸载程序签名。
-4. 对程序 exe 和安装包执行 `signtool verify /pa /v`。
+3. `wails3 generate webview2bootstrapper` 把运行时引导器放到 `build/windows/installer/tmp`；`project.nsi` 用 `!if /FileExists "tmp\MicrosoftEdgeWebview2Setup.exe"` 判断是否内嵌，路径错了会**静默**失去自动安装能力。
+4. 在 `build/windows/installer` 目录手工调用 `makensis` 重新打包，并传入 `-DSIGNTOOL`、`-DSIGN_ARGS`；`project.nsi` 中的 `!finalize` / `!uninstfinalize` 负责给安装包和卸载程序签名。
+5. 对程序 exe 和安装包执行 `signtool verify /pa /v`。
 
 常用参数：
 
@@ -81,11 +83,12 @@ powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1
 | `-CertificatePassword <密码>` | pfx 密码 |
 | `-SignTool <路径>`、`-MakeNsis <路径>` | 指定工具路径 |
 | `-TimestampUrl ""` | 关闭时间戳（离线构建） |
+| `-KeepRunning` | 不自动关闭正在运行的程序；遇到占用直接报错 |
 
 不签名的快速打包：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -SkipSign
+powershell -ExecutionPolicy Bypass -File tools/build-installer.ps1 -SkipSign
 ```
 
 产物：`build/bin/CaDt-DataLens-amd64-installer.exe`（安装包）和 `build/bin/CaDt-DataLens.exe`（程序本体）。
@@ -185,7 +188,7 @@ Remove-Item "Cert:\CurrentUser\Root\$thumb" -Force
 
 ### 正式证书
 
-- 拿到 CA 签发的 `.pfx` 后：`scripts/build-installer.ps1 -Certificate D:\path\code-signing.pfx -CertificatePassword <密码>`
+- 拿到 CA 签发的 `.pfx` 后：`tools/build-installer.ps1 -Certificate D:\path\code-signing.pfx -CertificatePassword <密码>`
 - 或把证书导入当前用户证书库，用指纹签名。
 - 时间戳默认 `http://timestamp.digicert.com`（RFC3161）；离线构建传 `-TimestampUrl ""`。
 
@@ -209,7 +212,7 @@ signtool verify /pa /v build/bin/CaDt-DataLens-amd64-installer.exe
 - [ ] `app_core.go` 的 `appVersion` 与 `wails.json` 的 `info.productVersion` 一致。
 - [ ] `go test ./...` 通过。
 - [ ] 构建脚本产出的便携版能正常启动。
-- [ ] `scripts/build-installer.ps1` 成功，并打印 `Successfully verified`。
+- [ ] `tools/build-installer.ps1` 成功，并打印 `Successfully verified`。
 - [ ] 静默安装 → 检查开始菜单快捷方式、卸载项、关联/右键菜单指向安装目录 → 静默卸载 → 检查清理。
 - [ ] 覆盖安装（不带 `/D`）仍装回上次目录。
 - [ ] 在 Windows 10 和 Windows 11 各验证一次（WebView2、SmartScreen 表现不同）。
@@ -232,7 +235,8 @@ signtool verify /pa /v build/bin/CaDt-DataLens-amd64-installer.exe
 
 | 文件 | 作用 |
 | --- | --- |
-| `scripts/build-installer.ps1` | 一键构建 + 签名 + 验签 |
+| `tools/build-installer.ps1` | 一键构建 + 签名 + 验签 |
+| `tools/build-installer.cmd` | 双击入口（透传参数给 ps1） |
 | `build/windows/installer/project.nsi` | 安装包模板（组件、升级、卸载、签名钩子） |
 | `build/windows/installer/wails_tools.nsh` | NSIS 变量（手工维护，发版同步版本号） |
 | `build/windows/info.json` | exe 文件属性（版本、公司、版权） |

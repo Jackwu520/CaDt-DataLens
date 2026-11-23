@@ -118,7 +118,7 @@
 ## 其他
 - `spike/wails3/`：P0 迁移 spike 的独立 Go 模块（七项还原度实测：Frameless/托盘/单实例/事件定向等，报告见 `docs/reports/wails-v3-p0-spike.md`；不入主构建，仅作历史参照）
 - `build/`：Wails 构建资源与 `build/bin` 产物；`build/windows` 放 NSIS 脚本
-- `scripts/build-installer.ps1`：构建 + 代码签名
+- `tools/build-installer.ps1` + `tools/build-installer.cmd`（双击入口）：构建安装包——前端 + syso + `go build (production,devtools)` + 签名 + WebView2 引导器 + `makensis` + 验签；**不跑测试门**（要跑用 `rebuild-exe`），运行中的实例默认自动关闭（`-KeepRunning` 可跳过）；包产线脚本统一放 `tools/`，`scripts/` 只留语料、模型训练与导出类脚本
 - `tools/hooks/git-guard.mjs`：跨 harness 的命令守卫（当前禁 `git checkout` / `git restore` 及其缩写与 shell 包装），挂在 `.workbuddy/settings.json` / `.claude/settings.json` / `.cursor/hooks.json` / `zcode.json`（ZCode 工作区配置，`process` 型免 shell 引号问题）四份配置上，见「禁止操作」
 - `tools/rebuild-exe.ps1` + `tools/rebuild-exe.cmd`（双击入口）：一键构建并替换根目录便携副本 `datalens.exe`——测试门（Go + 前端）通过才构建、失败可复制剪贴板给 AI 修复或强行构建；运行中实例优雅关闭 / 改名让路（见脚本头注释）
 - `plugins/`：随仓库分发的插件样例（如 `scene-carousel`，含欢迎页轮播与 AI 空态看板娘换装）
