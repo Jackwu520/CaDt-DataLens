@@ -2395,7 +2395,7 @@ const settingsKey = 'datalens-settings';
 // migrateLegacyTheme 迁移。插件可经 addTheme 追加主题（group: 'plugin'）。
 const themes = [
     {id: 'dark', name: '深色', group: 'base', bg: '#1e1f22', accent: '#548af7'},
-    {id: 'light', name: '浅色', group: 'base', bg: '#ffffff', accent: '#3574f0'},
+    {id: 'light', name: '浅色', group: 'base', bg: '#ffffff', accent: '#00c29a'},
 ];
 const uiFonts = [
     {id: 'inter', name: 'Inter', family: '"Inter"'},

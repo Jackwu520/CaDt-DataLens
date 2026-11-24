@@ -139,18 +139,18 @@
     --editor-font-family: "JetBrains Mono", "Microsoft YaHei UI", "微软雅黑", monospace;
 }
 
-/* 浅色主题：以 IDEA Light 为基底。页面与卡片同为纯白，边框是唯一分界；
+/* 浅色主题：以 WorkBuddy Light 为基底。页面与卡片同为纯白，边框是唯一分界；
    AI 消息区铺灰（--chat-bg=--panel）让白卡片靠面色差浮起（配合下方 .ai-widget
-   阴影规则），层次才立得住。 */
+   阴影规则），层次才立得住。品牌色取 WorkBuddy 的青绿 #00c29a。 */
 html[data-theme="light"] {
     color-scheme: light;
     --bg: #ffffff;
-    --panel: #f2f2f2;
+    --panel: #f7f7f7;
     --panel2: #ffffff;
-    --border: #d1d1d1;
+    --border: #dedede;
     --text: #000000;
     --muted: #6e6e6e;
-    --accent: #3574f0;
+    --accent: #00c29a;
     --on-accent: #ffffff;
     /* git 状态色：取自 JetBrains expUI_lightScheme.xml 的 FILESTATUS_* */
     --git-added: #067d17;
@@ -166,22 +166,22 @@ html[data-theme="light"] {
     --val-bool: #0033b3;
     --val-null: #0033b3;
     --orange: #9e880d;
-    --red: #c7222d;
-    --green: #067d17;
-    --warn: #9e880d;
-    --hover: #e6e6e6;
-    --placeholder: #a0a0a0;
+    --red: #f64041;
+    --green: #0cbf5b;
+    --warn: #ff7800;
+    --hover: #ebebeb;
+    --placeholder: #8a9099;
     --faint: #c8c8c8;
     --chip-bg: rgba(0, 0, 0, 0.05);
-    --tree-hover: #f2f2f2;
-    --tree-highlight: #e6f0ff;
-    --tree-highlight-active: #c7deff;
-    --tree-selected: #d4e2ff;
+    --tree-hover: #f4f5f5;
+    --tree-highlight: #dff7f2;
+    --tree-highlight-active: #bff0e6;
+    --tree-selected: #bff0e6;
     --field-focus-bg: var(--hover);
-    --accent-weak: rgba(53, 116, 240, 0.12);
+    --accent-weak: rgba(0, 194, 154, 0.12);
     --steer-weak: rgba(158, 136, 13, 0.14);
-    --text-selection: rgba(53, 116, 240, 0.22);
-    --ace-selection: #a6d2ff;
+    --text-selection: rgba(0, 194, 154, 0.22);
+    --ace-selection: #bff0e6;
     --ace-active: #f5f5f5;
     --ace-indent: #e6e6e6;
     --ace-punct: #000000;
@@ -221,8 +221,8 @@ html[data-theme="light"] {
     /* 浅色专属补齐（原散落组规则并入）：查找命中 / 词次 / 快速切换选中用暖色高亮 */
     --find-match-bg: #fcd47e;
     --word-occ-bg: #edebfc;
-    --qs-selected-bg: #cfe0ff;
-    --qs-selected-text: #173e6b;
+    --qs-selected-bg: #bff0e6;
+    --qs-selected-text: #00614d;
     --chat-bg: var(--panel);
 }
 

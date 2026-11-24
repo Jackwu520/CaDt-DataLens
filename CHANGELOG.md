@@ -4,6 +4,13 @@ CaDt-DataLens 的重要变更记录。版本号采用 `vMAJOR.MINOR.PATCH`，与
 
 ## 未发布
 
+### 变更（浅色主题：IDEA Light 基底改为 WorkBuddy Light）
+
+- **基底迁移**：浅色界面主题从 IDEA Light 换成 WorkBuddy 主题令牌的浅色语义值——面板灰从 `#f2f2f2` 改 `#f7f7f7`、边框从 `#d1d1d1` 改 `#dedede`（`style.css` 浅色变量块）；深色主题不变。
+- **品牌色换青绿**：accent 从 IDEA 蓝 `#3574f0` 换 WorkBuddy 品牌青绿 `#00c29a`，连动 accent-weak / 文本选区 / 树高亮与选中（`#dff7f2` / `#bff0e6`）/ 快速切换选中（底 `#bff0e6`、字 `#00614d`）/ Ace 选区；主题选择器的浅色预览色点同步（`main.js`）。
+- **状态色对齐**：错误 `#f64041`、成功 `#0cbf5b`、警告 `#ff7800`（WorkBuddy status 令牌）。
+- 语法 token、git 状态色、代码主题（编辑器配色方案）与界面主题解耦，**不改**；`npm run build` 通过，浏览器 mock 实测浅色界面生效。
+
 ### 修复（内嵌浏览器：分辨率选择不缩放，页面纹丝不动）
 
 - **现象**：工具条选「375 × 812（iPhone）」等预设后，页面照旧按标签页宽度布局——`innerWidth`、媒体查询都没变，分辨率选项实际上只改了可视框大小，等于没选。
